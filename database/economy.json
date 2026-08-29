@@ -1,0 +1,152 @@
+{
+  "2281198063748@lid": {
+    "balance": 1036348,
+    "bank": 0,
+    "bankCapacity": 1000000,
+    "bankUpgraded": false,
+    "daily": 1787682176234,
+    "weekly": 1787682180096,
+    "monthly": 1786351187362,
+    "work": 1787252123337,
+    "rob": 0,
+    "robStars": 0,
+    "jailedUntil": 0,
+    "wantedUntil": 0,
+    "level": 2,
+    "xp": 6200,
+    "inventory": {
+      "lucky": 1
+    },
+    "items": {
+      "luckyUntil": 1786437814382,
+      "shieldUntil": 0,
+      "vaultUntil": 0
+    },
+    "stats": {
+      "gamesPlayed": 8,
+      "gamesWon": 6,
+      "gamesLost": 2,
+      "duels": 1,
+      "duelWins": 1,
+      "duelLosses": 0,
+      "robAttempts": 0,
+      "robSuccess": 0,
+      "robFailed": 0,
+      "jailed": 0,
+      "bailed": 0,
+      "moneyEarned": 270000,
+      "moneyLost": 16000
+    }
+  },
+  "155701808771106@lid": {
+    "balance": 0,
+    "bank": 0,
+    "bankCapacity": 1000000,
+    "bankUpgraded": false,
+    "daily": 1786351865279,
+    "weekly": 1786351867129,
+    "monthly": 1786351870927,
+    "work": 0,
+    "rob": 0,
+    "robStars": 0,
+    "jailedUntil": 0,
+    "wantedUntil": 0,
+    "level": 1,
+    "xp": 2650,
+    "inventory": {},
+    "items": {
+      "luckyUntil": 0,
+      "shieldUntil": 0,
+      "vaultUntil": 0
+    },
+    "stats": {
+      "gamesPlayed": 0,
+      "gamesWon": 0,
+      "gamesLost": 0,
+      "duels": 0,
+      "duelWins": 0,
+      "duelLosses": 0,
+      "robAttempts": 0,
+      "robSuccess": 0,
+      "robFailed": 0,
+      "jailed": 0,
+      "bailed": 0,
+      "moneyEarned": 0,
+      "moneyLost": 0
+    }
+  },
+  "48400624005283@lid": {
+    "balance": 11147,
+    "bank": 0,
+    "bankCapacity": 1000000,
+    "bankUpgraded": false,
+    "daily": 1787589191423,
+    "weekly": 0,
+    "monthly": 0,
+    "work": 1787589115188,
+    "rob": 0,
+    "robStars": 0,
+    "jailedUntil": 0,
+    "wantedUntil": 0,
+    "level": 1,
+    "xp": 250,
+    "inventory": {},
+    "items": {
+      "luckyUntil": 0,
+      "shieldUntil": 0,
+      "vaultUntil": 0
+    },
+    "stats": {
+      "gamesPlayed": 0,
+      "gamesWon": 0,
+      "gamesLost": 0,
+      "duels": 0,
+      "duelWins": 0,
+      "duelLosses": 0,
+      "robAttempts": 0,
+      "robSuccess": 0,
+      "robFailed": 0,
+      "jailed": 0,
+      "bailed": 0,
+      "moneyEarned": 0,
+      "moneyLost": 0
+    }
+  },
+  "5437764149473@lid": {
+    "balance": 0,
+    "bank": 0,
+    "bankCapacity": 1000000,
+    "bankUpgraded": false,
+    "daily": 0,
+    "weekly": 0,
+    "monthly": 0,
+    "work": 0,
+    "rob": 0,
+    "robStars": 0,
+    "jailedUntil": 0,
+    "wantedUntil": 0,
+    "level": 1,
+    "xp": 100,
+    "inventory": {},
+    "items": {
+      "luckyUntil": 0,
+      "shieldUntil": 0,
+      "vaultUntil": 0
+    },
+    "stats": {
+      "gamesPlayed": 1,
+      "gamesWon": 0,
+      "gamesLost": 1,
+      "duels": 1,
+      "duelWins": 0,
+      "duelLosses": 1,
+      "robAttempts": 0,
+      "robSuccess": 0,
+      "robFailed": 0,
+      "jailed": 0,
+      "bailed": 0,
+      "moneyEarned": 0,
+      "moneyLost": 1000
+    }
+  }
+}

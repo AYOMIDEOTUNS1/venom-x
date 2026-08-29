@@ -1,0 +1,90 @@
+{
+  "2281198063748@s.whatsapp.net": {
+    "balance": 771,
+    "bank": 333000,
+    "daily": 1786194538816,
+    "weekly": 1786194715480,
+    "monthly": 1786196576374,
+    "work": 1786264506319,
+    "rob": 1786264578076,
+    "robStars": 0,
+    "jailedUntil": 1786270478544
+  },
+  "188618471690240@s.whatsapp.net": {
+    "balance": 0,
+    "bank": 270774,
+    "daily": 1786194789893,
+    "weekly": 1786194760496,
+    "monthly": 1786197077461,
+    "work": 1786263162640,
+    "rob": 1786264657711,
+    "robStars": 1,
+    "jailedUntil": 0
+  },
+  "48400624005283@s.whatsapp.net": {
+    "balance": 275681,
+    "bank": 0,
+    "daily": 1786203891830,
+    "weekly": 1786203937401,
+    "monthly": 1786203905279,
+    "work": 1786226338780,
+    "rob": 0,
+    "robStars": 0,
+    "jailedUntil": 0
+  },
+  "155701808771106@s.whatsapp.net": {
+    "balance": 4197,
+    "bank": 0,
+    "daily": 1786260983268,
+    "weekly": 0,
+    "monthly": 1786260997834,
+    "work": 1786260986934,
+    "rob": 0,
+    "robStars": 0,
+    "jailedUntil": 0
+  },
+  "147425205469204@s.whatsapp.net": {
+    "balance": 53000,
+    "bank": 0,
+    "daily": 0,
+    "weekly": 0,
+    "monthly": 0,
+    "work": 0,
+    "rob": 0,
+    "robStars": 0,
+    "jailedUntil": 0
+  },
+  "223437888999588@s.whatsapp.net": {
+    "balance": 1000,
+    "bank": 0,
+    "daily": 0,
+    "weekly": 0,
+    "monthly": 0,
+    "work": 0,
+    "rob": 0,
+    "robStars": 0,
+    "jailedUntil": 1786269062337
+  },
+  "7576892752125@s.whatsapp.net": {
+    "balance": -4000,
+    "bank": 0,
+    "daily": 0,
+    "weekly": 0,
+    "monthly": 0,
+    "work": 0,
+    "rob": 0,
+    "robStars": 0,
+    "jailedUntil": 1786270524661
+  },
+  "234000000000@s.whatsapp.net": {
+    "balance": 1000,
+    "bank": 0,
+    "daily": 0,
+    "weekly": 0,
+    "monthly": 0,
+    "work": 0,
+    "rob": 0,
+    "robStars": 0,
+    "jailedUntil": 0
+  }
+}

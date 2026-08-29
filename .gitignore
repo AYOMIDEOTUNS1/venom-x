@@ -1,0 +1,125 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# WhatsApp authentication / sessions
+auth_info_baileys/
+auth_info_baileys_*/
+sessions/
+session/
+auth/
+auth_info/
+
+# Telegram/local session data
+telegram/sessions/
+telegram/session/
+telegram/*.session
+
+# Local databases / runtime data
+database/*.db
+database/*.sqlite
+database/*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Temporary/downloaded media
+temp/
+*.part
+*.ytdl
+*.mp4
+*.mkv
+*.webm
+
+# Archives
+*.tar.gz
+*.zip
+
+# Backups / old versions
+*.backup
+*.backup.*
+*.old
+*.old.*
+commands/*.backup.js
+handlers/*.backup.js
+lib/*.backup.js
+
+# Generated/player files
+*-player-script.js
+
+# Old project copies
+venom-x-v3/
+
+# Personal/runtime files
+msg.txt
+
+# Secrets / credentials
+.env
+.env.*
+!.env.example
+
+# WhatsApp sessions
+auth_info_baileys/
+session/
+sessions/
+**/creds.json
+**/app-state-sync-key-*.json
+
+# API/config secrets
+settings.local.json
+telegram/licenses.json
+
+# Termux/user config accidentally copied into project
+~/.config/yt-dlp/config
+
+# Accidentally copied home/config directory
+~/
+
+# WhatsApp/runtime backups
+auth_info_baileys_bad_*/
+*.backup
+*.backup.*
+*.old
+*.old.*
+index.old.js
+msg.txt
+
+# Temporary/downloaded files
+temp/
+*.part
+*.ytdl
+
+# Archives
+*.tar.gz
+*.zip
+
+# Old project copies
+venom-x-v3/
+
+# Runtime / generated bot data
+database/*.json
+data/*.json
+
+# Runtime / generated bot data
+database/*.json
+data/*.json

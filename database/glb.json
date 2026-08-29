@@ -1,0 +1,12 @@
+{
+  "currentPhase": 1,
+  "phases": {
+    "1": {
+      "name": "Phase 1",
+      "startedAt": 0,
+      "endsAt": 0,
+      "players": {},
+      "groups": {}
+    }
+  }
+}
