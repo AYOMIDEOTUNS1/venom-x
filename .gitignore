@@ -123,3 +123,4 @@ data/*.json
 # Runtime / generated bot data
 database/*.json
 data/*.json
+settings.json
