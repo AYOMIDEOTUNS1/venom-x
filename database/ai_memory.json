@@ -80,5 +80,31 @@
       "role": "assistant",
       "content": "Here are 20 slick “rizz” lines you can drop—short, sharp, and ready to win hearts.  \n(Feel free to tweak the tone to match the vibe.)\n\n1. “You’re the reason my heart does a full‑back flip.”  \n2. “If beauty were a crime, you’d be serving a life sentence.”  \n3. “I’m not a photographer, but I can see us together.”  \n4. “Is your name Wi‑Fi? Because I’m feeling a strong connection.”  \n5. “You’ve got the kind of smile that could light up a blackout.”  \n6. “Your laugh is my favorite soundtrack.”  \n7. “I didn’t believe in destiny until I met you.”  \n8. “You’re the missing piece to my puzzle—now my world’s complete.”  \n9. “Your vibe is so good, I’d call it a ‘love‑bug’.”  \n10. “If I could rearrange the alphabet, I’d put U and I together.”  \n11. “Your eyes are like a sunrise—every time I see them, I feel brand new.”  \n12. “You’re the reason I check my phone for the first time in hours.”  \n13. “I’m not a mathematician, but I know we’re a perfect equation.”  \n14. “Your smile could stop traffic—just a warning.”  \n15. “You’re the reason I write my own love story.”  \n16. “If we were a song, we’d be a chart‑topping hit.”  \n17. “Your presence turns a simple day into a masterpiece.”  \n18. “You’re the reason I keep coming back to this conversation.”  \n19. “Your energy is contagious—please keep it in your pocket.”  \n20. “I’d say ‘I love you,’ but it’s too cliché. So, how about we just start a story?”\n\nDrop one, see the magic happen!"
     }
+  ],
+  "90336802123777@lid": [
+    {
+      "role": "user",
+      "content": "when to xauusd close on Friday and when does it open on Sunday what time?"
+    },
+    {
+      "role": "assistant",
+      "content": "**XAU/USD (Gold/USD) trading hours**\n\n| Market | Closing time on Friday | Opening time on Sunday |\n|--------|------------------------|------------------------|\n| Standard Forex market (most brokers) | **5:00 pm EST** (10:00 pm GMT) | **5:00 pm EST** (10:00 pm GMT) |\n| Some brokers that offer 24‑hour weekend trading | Varies – check the broker’s calendar, but the “official” market is still closed until the Friday 5 pm EST reset. |\n\n**Key points**\n\n1. **Friday 5 pm EST** is the official close of the regular forex session.  \n2. **Sunday 5 pm EST** is when the session restarts (the market is technically “open” again).  \n3. If you’re trading on a broker that offers 24‑hour weekend trading, the platform may allow trades on Sunday, but the underlying market liquidity is still limited until the Friday close.  \n4. Always double‑check your broker’s own trading calendar, as some may use a different time zone (e.g., GMT, CET, or local time) for their “open/close” announcements.\n\nSo, in short: **XAU/USD closes at 5 pm EST on Friday and re‑opens at 5 pm EST on Sunday** (or 10 pm GMT for both)."
+    },
+    {
+      "role": "user",
+      "content": "when to xauusd close on Friday and when does it open on Sunday what time?"
+    },
+    {
+      "role": "assistant",
+      "content": "**XAU/USD (Gold/USD) – Standard Forex Market Hours**\n\n| Day | Market Close / Open | Time (EST) | Time (GMT) |\n|-----|---------------------|------------|------------|\n| **Friday** | **Close** | 5:00 pm | 10:00 pm |\n| **Sunday** | **Open** | 5:00 pm | 10:00 pm |\n\n> **Why this time?**  \n> The regular forex market runs Monday‑Friday 9:00 am EST – 5:00 pm EST. It shuts down for the weekend and restarts at the same time on Sunday.\n\n---\n\n### Quick notes\n\n1. **Weekend liquidity is limited** – Even though the “official” open is Sunday 5 pm EST, most brokers will still show a “closed” or “no liquidity” status until that time.\n2. **Some brokers offer 24‑hour weekend trading** – If your broker advertises 24‑hour XAU/USD, they may allow orders to be placed, but the market depth is usually very thin until the Friday close.\n3. **Check your broker’s calendar** – Some use GMT or local time zones, so verify the exact times they list.\n\n**Bottom line:** XAU/USD closes on Friday at **5 pm EST (10 pm GMT)** and re‑opens on Sunday at the same time."
+    },
+    {
+      "role": "user",
+      "content": "I mean afica/Lagos time"
+    },
+    {
+      "role": "assistant",
+      "content": "**XAU/USD (Gold/USD) – Friday close / Sunday open in Lagos time (WAT – UTC + 1)**  \n\n| Market event | Time in WAT (Lagos) | Notes |\n|--------------|---------------------|-------|\n| **Friday – market close** | **11:00 pm WAT** | 5:00 pm EST (or 5:00 pm EDT) → +6 h = 11:00 pm WAT |\n| **Sunday – market open** | **11:00 pm WAT** | Same as the Friday close time – the market restarts at the same clock hour. |\n\n> **Daylight‑saving nuance**  \n> The forex market still says “5 pm EST” for its official close, even during U.S. daylight‑saving time. If you’re converting from **EDT** (UTC‑4) instead, the times shift to **10:00 pm WAT**.  \n> \n> *So, in most cases you’ll see 11 pm WAT on both Friday (close) and Sunday (open).*\n\n**Quick recap**\n\n- **Friday 11:00 pm WAT** – the regular session ends.  \n- **Sunday 11:00 pm WAT** – the session starts again (unless your broker offers 24‑hour weekend trading, in which case the platform may still allow orders but liquidity is limited until this time)."
+    }
   ]
 }
