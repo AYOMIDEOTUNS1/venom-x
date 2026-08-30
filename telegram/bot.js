@@ -12,7 +12,7 @@ function startTelegramBot() {
     const token = process.env.TELEGRAM_BOT_TOKEN;
 
     if (!token) {
-        throw new Error("TELEGRAM_BOT_TOKEN missing in .env");
+        console.log("⚠️ TELEGRAM_BOT_TOKEN missing — Telegram service disabled."); return null;
     }
 
     const ownerId =
@@ -44,7 +44,7 @@ function startTelegramBot() {
 
     async function notifyUser(chatId, text) {
         return send(chatId, text, {
-            parse_mode: "Markdown"
+            parse_mode: undefined
         });
     }
 
