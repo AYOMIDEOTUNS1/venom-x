@@ -1,25 +1,23 @@
 const fs = require("fs");
-const settings = require("../settings.json");
+const path = require("path");
+const SETTINGS = path.join(__dirname, "..", "settings.json");
+
+function load() {
+    try { return JSON.parse(fs.readFileSync(SETTINGS, "utf8")); }
+    catch (e) { return {}; }
+}
+function save(data) {
+    fs.writeFileSync(SETTINGS, JSON.stringify(data, null, 2));
+}
 
 module.exports = {
-    run: async ({ isOwner, reply }) => {
-
-        if (!isOwner) {
-            return reply("❌ This command is for the bot owner only.");
-        }
-
+    name: "private",
+    aliases: ["self"],
+    run: async function ({ reply, isOwner }) {
+        if (!isOwner) return reply("❌ Owner only.");
+        const settings = load();
         settings.mode = "private";
-
-        fs.writeFileSync(
-            "./settings.json",
-            JSON.stringify(settings, null, 2)
-        );
-
-        return reply(`╭━━〔 🔒 PRIVATE MODE 〕━━⬣
-┃
-┃ ✅ VENOM X is now PRIVATE
-┃ 👑 Only the owner can use commands.
-┃
-╰━━━━━━━━━━━━━━━━⬣`);
+        save(settings);
+        return reply("🔒 Mode: PRIVATE\nOnly owner can use commands.");
     }
 };

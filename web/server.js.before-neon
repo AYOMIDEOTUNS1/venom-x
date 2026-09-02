@@ -1,0 +1,1359 @@
+require("dotenv").config();
+const express = require("express");
+const session = require("express-session");
+const pgSession = require("connect-pg-simple")(session);
+const { Pool } = require("pg");
+const bcrypt = require("bcryptjs");
+const crypto = require("crypto");
+
+const app = express();
+
+const PORT = process.env.PORT || 3000;
+
+if (!process.env.DATABASE_URL) {
+    console.error("DATABASE_URL is missing.");
+    process.exit(1);
+}
+
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false },
+});
+
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
+
+app.use(session({
+    store: new pgSession({
+        pool,
+        tableName: "user_sessions",
+        createTableIfMissing: true
+    }),
+    secret: process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex"),
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+        httpOnly: true,
+        sameSite: "lax",
+        secure: process.env.NODE_ENV === "production",
+        maxAge: 7 * 24 * 60 * 60 * 1000
+    }
+}));
+
+function escapeHtml(value) {
+    return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+}
+
+function page(title, content) {
+    return `
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${escapeHtml(title)} — VENOM X</title>
+
+<style>
+*{box-sizing:border-box}
+
+body{
+    margin:0;
+    min-height:100vh;
+    background:#050505;
+    color:#fff;
+    font-family:Arial,sans-serif;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+}
+
+.card{
+    width:min(92%,460px);
+    background:#0d0d0d;
+    border:1px solid #242424;
+    border-radius:20px;
+    padding:30px;
+    box-shadow:0 20px 70px rgba(0,0,0,.55);
+}
+
+h1{
+    text-align:center;
+    letter-spacing:4px;
+    margin:0 0 8px;
+}
+
+h2{
+    margin-top:0;
+}
+
+.subtitle{
+    text-align:center;
+    color:#888;
+    margin-bottom:25px;
+}
+
+input{
+    width:100%;
+    padding:14px;
+    margin:7px 0;
+    border:1px solid #292929;
+    border-radius:10px;
+    background:#151515;
+    color:#fff;
+    outline:none;
+}
+
+input:focus{
+    border-color:#555;
+}
+
+button{
+    width:100%;
+    padding:14px;
+    margin-top:12px;
+    border:0;
+    border-radius:10px;
+    background:#fff;
+    color:#000;
+    font-weight:bold;
+    cursor:pointer;
+}
+
+button:hover{
+    opacity:.9;
+}
+
+a{
+    color:#aaa;
+    text-decoration:none;
+}
+
+.links{
+    text-align:center;
+    margin-top:18px;
+    line-height:1.8;
+}
+
+.error{
+    background:#241010;
+    border:1px solid #542020;
+    padding:12px;
+    border-radius:10px;
+    margin-bottom:15px;
+}
+
+.success{
+    background:#102414;
+    border:1px solid #214d29;
+    padding:12px;
+    border-radius:10px;
+    margin-bottom:15px;
+}
+
+.info{
+    background:#111820;
+    border:1px solid #263646;
+    padding:12px;
+    border-radius:10px;
+    margin-bottom:15px;
+}
+
+.stat{
+    background:#111;
+    border:1px solid #222;
+    border-radius:12px;
+    padding:15px;
+    margin:10px 0;
+}
+
+table{
+    width:100%;
+    border-collapse:collapse;
+    font-size:13px;
+}
+
+th,td{
+    padding:9px;
+    border-bottom:1px solid #252525;
+    text-align:left;
+}
+
+.badge{
+    display:inline-block;
+    padding:5px 9px;
+    border-radius:20px;
+    background:#191919;
+    color:#bbb;
+    font-size:12px;
+}
+</style>
+</head>
+
+<body>
+<div class="card">
+<h1>VENOM X</h1>
+<div class="subtitle">${escapeHtml(title)}</div>
+${content}
+</div>
+</body>
+</html>`;
+}
+
+async function query(text, params = []) {
+    return pool.query(text, params);
+}
+
+async function initDatabase() {
+    await query(`
+        CREATE TABLE IF NOT EXISTS users (
+            id BIGSERIAL PRIMARY KEY,
+            username TEXT NOT NULL UNIQUE,
+            email TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'user',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS reset_tokens (
+            id BIGSERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            token_hash TEXT NOT NULL UNIQUE,
+            expires_at TIMESTAMPTZ NOT NULL,
+            used BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS license_keys (
+            id BIGSERIAL PRIMARY KEY,
+            key TEXT NOT NULL UNIQUE,
+            duration TEXT NOT NULL,
+            used_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+            expires_at TIMESTAMPTZ,
+            active BOOLEAN NOT NULL DEFAULT TRUE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS deployments (
+            id BIGSERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            phone TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+    `);
+
+    console.log("PostgreSQL database initialized.");
+}
+
+function requireLogin(req, res, next) {
+    if (!req.session.user) {
+        return res.redirect("/login");
+    }
+
+    next();
+}
+
+function requireAdmin(req, res, next) {
+    if (
+        !req.session.user ||
+        req.session.user.role !== "admin"
+    ) {
+        return res.status(403).send(
+            page(
+                "Access denied",
+                `
+                <div class="error">
+                    You do not have administrator access.
+                </div>
+
+                <div class="links">
+                    <a href="/dashboard">Back to dashboard</a>
+                </div>
+                `
+            )
+        );
+    }
+
+    next();
+}
+
+/* =========================================================
+   HEALTH
+========================================================= */
+
+app.get("/health", async (req, res) => {
+    try {
+        await query("SELECT 1");
+
+        res.json({
+            ok: true,
+            service: "VENOM X PANEL",
+            database: "connected"
+        });
+    } catch (err) {
+        res.status(500).json({
+            ok: false,
+            service: "VENOM X PANEL",
+            database: "disconnected"
+        });
+    }
+});
+
+/* =========================================================
+   HOME
+========================================================= */
+
+app.get("/", (req, res) => {
+    if (req.session.user) {
+        return res.redirect("/dashboard");
+    }
+
+    res.send(page("WhatsApp Deployment Portal", `
+        <p>
+            Welcome to the VENOM X deployment portal.
+        </p>
+
+        <div class="info">
+            Create an account, activate your access key,
+            then manage your VENOM X deployment.
+        </div>
+
+        <form action="/login" method="get">
+            <button>LOGIN</button>
+        </form>
+
+        <form action="/register" method="get">
+            <button>CREATE ACCOUNT</button>
+        </form>
+
+        <div class="links">
+            <a href="/forgot-password">Forgot password?</a>
+        </div>
+    `));
+});
+
+/* =========================================================
+   REGISTER
+========================================================= */
+
+app.get("/register", (req, res) => {
+    res.send(page("Create Account", `
+        <form method="POST" action="/register">
+
+            <input
+                name="username"
+                placeholder="Username"
+                required
+                minlength="3"
+                maxlength="30"
+                autocomplete="username"
+            >
+
+            <input
+                name="email"
+                type="email"
+                placeholder="Email address"
+                required
+                maxlength="120"
+                autocomplete="email"
+            >
+
+            <input
+                name="password"
+                type="password"
+                placeholder="Password"
+                required
+                minlength="8"
+                autocomplete="new-password"
+            >
+
+            <input
+                name="confirmPassword"
+                type="password"
+                placeholder="Confirm password"
+                required
+                minlength="8"
+                autocomplete="new-password"
+            >
+
+            <button type="submit">REGISTER</button>
+        </form>
+
+        <div class="links">
+            <a href="/login">Already have an account? Login</a>
+        </div>
+    `));
+});
+
+app.post("/register", async (req, res) => {
+    try {
+        const username =
+            String(req.body.username || "").trim();
+
+        const email =
+            String(req.body.email || "")
+                .trim()
+                .toLowerCase();
+
+        const password =
+            String(req.body.password || "");
+
+        const confirmPassword =
+            String(req.body.confirmPassword || "");
+
+        if (username.length < 3) {
+            return res.send(page("Registration failed", `
+                <div class="error">
+                    Username must contain at least 3 characters.
+                </div>
+                <a href="/register">Go back</a>
+            `));
+        }
+
+        if (password.length < 8) {
+            return res.send(page("Registration failed", `
+                <div class="error">
+                    Password must contain at least 8 characters.
+                </div>
+                <a href="/register">Go back</a>
+            `));
+        }
+
+        if (password !== confirmPassword) {
+            return res.send(page("Registration failed", `
+                <div class="error">
+                    Passwords do not match.
+                </div>
+                <a href="/register">Go back</a>
+            `));
+        }
+
+        const existing = await query(`
+            SELECT id
+            FROM users
+            WHERE username = $1 OR email = $2
+            LIMIT 1
+        `, [username, email]);
+
+        if (existing.rows.length) {
+            return res.send(page("Registration failed", `
+                <div class="error">
+                    Username or email is already registered.
+                </div>
+                <a href="/register">Go back</a>
+            `));
+        }
+
+        const passwordHash =
+            await bcrypt.hash(password, 12);
+
+        const result = await query(`
+            INSERT INTO users
+                (username,email,password_hash,role)
+            VALUES
+                ($1,$2,$3,'user')
+            RETURNING id,username,email,role
+        `, [
+            username,
+            email,
+            passwordHash
+        ]);
+
+        const user = result.rows[0];
+
+        req.session.user = {
+            id: String(user.id),
+            username: user.username,
+            email: user.email,
+            role: user.role
+        };
+
+        res.redirect("/dashboard");
+
+    } catch (err) {
+        console.error("REGISTER ERROR:", err.message);
+
+        res.status(500).send(
+            page(
+                "Registration error",
+                `<div class="error">Could not create account.</div>`
+            )
+        );
+    }
+});
+
+/* =========================================================
+   LOGIN
+========================================================= */
+
+app.get("/login", (req, res) => {
+    res.send(page("Login", `
+        <form method="POST" action="/login">
+
+            <input
+                name="email"
+                type="email"
+                placeholder="Email address"
+                required
+                autocomplete="email"
+            >
+
+            <input
+                name="password"
+                type="password"
+                placeholder="Password"
+                required
+                autocomplete="current-password"
+            >
+
+            <button type="submit">LOGIN</button>
+        </form>
+
+        <div class="links">
+            <a href="/register">Create account</a><br>
+            <a href="/forgot-password">Forgot password?</a>
+        </div>
+    `));
+});
+
+app.post("/login", async (req, res) => {
+    try {
+        const email =
+            String(req.body.email || "")
+                .trim()
+                .toLowerCase();
+
+        const password =
+            String(req.body.password || "");
+
+        const result = await query(`
+            SELECT *
+            FROM users
+            WHERE email = $1
+            LIMIT 1
+        `, [email]);
+
+        const user = result.rows[0];
+
+        if (
+            !user ||
+            !(await bcrypt.compare(
+                password,
+                user.password_hash
+            ))
+        ) {
+            return res.send(page("Login failed", `
+                <div class="error">
+                    Invalid email or password.
+                </div>
+
+                <div class="links">
+                    <a href="/login">Try again</a><br>
+                    <a href="/forgot-password">Forgot password?</a>
+                </div>
+            `));
+        }
+
+        req.session.user = {
+            id: String(user.id),
+            username: user.username,
+            email: user.email,
+            role: user.role
+        };
+
+        res.redirect("/dashboard");
+
+    } catch (err) {
+        console.error("LOGIN ERROR:", err.message);
+
+        res.status(500).send(
+            page(
+                "Login error",
+                `<div class="error">Login failed.</div>`
+            )
+        );
+    }
+});
+
+/* =========================================================
+   FORGOT PASSWORD
+========================================================= */
+
+app.get("/forgot-password", (req, res) => {
+    res.send(page("Reset Password", `
+        <p>
+            Enter the email address connected to your account.
+        </p>
+
+        <form method="POST" action="/forgot-password">
+
+            <input
+                name="email"
+                type="email"
+                placeholder="Email address"
+                required
+                autocomplete="email"
+            >
+
+            <button type="submit">
+                REQUEST RESET
+            </button>
+        </form>
+
+        <div class="links">
+            <a href="/login">Back to login</a>
+        </div>
+    `));
+});
+
+app.post("/forgot-password", async (req, res) => {
+    try {
+        const email =
+            String(req.body.email || "")
+                .trim()
+                .toLowerCase();
+
+        const result = await query(`
+            SELECT id
+            FROM users
+            WHERE email = $1
+            LIMIT 1
+        `, [email]);
+
+        const user = result.rows[0];
+
+        if (user) {
+            const rawToken =
+                crypto.randomBytes(32).toString("hex");
+
+            const tokenHash =
+                crypto
+                    .createHash("sha256")
+                    .update(rawToken)
+                    .digest("hex");
+
+            await query(`
+                INSERT INTO reset_tokens
+                    (user_id,token_hash,expires_at)
+                VALUES
+                    ($1,$2,NOW() + INTERVAL '30 minutes')
+            `, [
+                user.id,
+                tokenHash
+            ]);
+
+            /*
+             * TEMPORARY:
+             * Until SMTP/email is connected, the reset URL
+             * is printed in the server log.
+             *
+             * We will replace this with real email delivery.
+             */
+
+            const resetUrl =
+                "/reset-password?token=" + rawToken;
+
+            console.log(
+                "[PASSWORD RESET]",
+                resetUrl
+            );
+        }
+
+        /*
+         * Never reveal whether the email exists.
+         */
+
+        res.send(page("Reset Requested", `
+            <div class="success">
+                If that email is registered, a password
+                reset link has been created.
+            </div>
+
+            <div class="info">
+                Email delivery will be connected to the
+                production mail service before launch.
+            </div>
+
+            <div class="links">
+                <a href="/login">Return to login</a>
+            </div>
+        `));
+
+    } catch (err) {
+        console.error(
+            "FORGOT PASSWORD ERROR:",
+            err.message
+        );
+
+        res.status(500).send(
+            page(
+                "Reset error",
+                `<div class="error">Could not process request.</div>`
+            )
+        );
+    }
+});
+
+/* =========================================================
+   RESET PASSWORD
+========================================================= */
+
+app.get("/reset-password", async (req, res) => {
+    const token =
+        String(req.query.token || "");
+
+    if (!token) {
+        return res.status(400).send(
+            page(
+                "Invalid reset link",
+                `<div class="error">Reset token missing.</div>`
+            )
+        );
+    }
+
+    const tokenHash =
+        crypto
+            .createHash("sha256")
+            .update(token)
+            .digest("hex");
+
+    const result = await query(`
+        SELECT id
+        FROM reset_tokens
+        WHERE token_hash = $1
+          AND used = FALSE
+          AND expires_at > NOW()
+        LIMIT 1
+    `, [tokenHash]);
+
+    if (!result.rows.length) {
+        return res.status(400).send(
+            page("Invalid reset link", `
+                <div class="error">
+                    This reset link is invalid or expired.
+                </div>
+
+                <a href="/forgot-password">
+                    Request another reset
+                </a>
+            `)
+        );
+    }
+
+    res.send(page("Choose New Password", `
+        <form method="POST" action="/reset-password">
+
+            <input
+                type="hidden"
+                name="token"
+                value="${escapeHtml(token)}"
+            >
+
+            <input
+                name="password"
+                type="password"
+                placeholder="New password"
+                required
+                minlength="8"
+                autocomplete="new-password"
+            >
+
+            <input
+                name="confirmPassword"
+                type="password"
+                placeholder="Confirm new password"
+                required
+                minlength="8"
+                autocomplete="new-password"
+            >
+
+            <button type="submit">
+                CHANGE PASSWORD
+            </button>
+        </form>
+    `));
+});
+
+app.post("/reset-password", async (req, res) => {
+    try {
+        const token =
+            String(req.body.token || "");
+
+        const password =
+            String(req.body.password || "");
+
+        const confirmPassword =
+            String(req.body.confirmPassword || "");
+
+        if (
+            !token ||
+            password.length < 8 ||
+            password !== confirmPassword
+        ) {
+            return res.send(page("Reset failed", `
+                <div class="error">
+                    Invalid token or passwords do not match.
+                </div>
+
+                <a href="/forgot-password">
+                    Request another reset
+                </a>
+            `));
+        }
+
+        const tokenHash =
+            crypto
+                .createHash("sha256")
+                .update(token)
+                .digest("hex");
+
+        const tokenResult = await query(`
+            SELECT id,user_id
+            FROM reset_tokens
+            WHERE token_hash = $1
+              AND used = FALSE
+              AND expires_at > NOW()
+            LIMIT 1
+        `, [tokenHash]);
+
+        const reset = tokenResult.rows[0];
+
+        if (!reset) {
+            return res.send(page("Reset failed", `
+                <div class="error">
+                    This reset link is invalid or expired.
+                </div>
+
+                <a href="/forgot-password">
+                    Request another reset
+                </a>
+            `));
+        }
+
+        const passwordHash =
+            await bcrypt.hash(password, 12);
+
+        const client =
+            await pool.connect();
+
+        try {
+            await client.query("BEGIN");
+
+            await client.query(`
+                UPDATE users
+                SET password_hash = $1
+                WHERE id = $2
+            `, [
+                passwordHash,
+                reset.user_id
+            ]);
+
+            await client.query(`
+                UPDATE reset_tokens
+                SET used = TRUE
+                WHERE id = $1
+            `, [reset.id]);
+
+            await client.query("COMMIT");
+
+        } catch (err) {
+            await client.query("ROLLBACK");
+            throw err;
+        } finally {
+            client.release();
+        }
+
+        res.send(page("Password Changed", `
+            <div class="success">
+                Your password has been changed successfully.
+            </div>
+
+            <div class="links">
+                <a href="/login">LOGIN</a>
+            </div>
+        `));
+
+    } catch (err) {
+        console.error(
+            "RESET PASSWORD ERROR:",
+            err.message
+        );
+
+        res.status(500).send(
+            page(
+                "Reset error",
+                `<div class="error">Could not change password.</div>`
+            )
+        );
+    }
+});
+
+/* =========================================================
+   DASHBOARD
+========================================================= */
+
+app.get("/dashboard", requireLogin, async (req, res) => {
+    const user = req.session.user;
+
+    const result = await query(`
+        SELECT id,phone,status,created_at
+        FROM deployments
+        WHERE user_id = $1
+        ORDER BY id DESC
+    `, [user.id]);
+
+    const deployments = result.rows;
+
+    const deploymentRows =
+        deployments.length
+            ? deployments.map(d => `
+                <tr>
+                    <td>${escapeHtml(d.phone || "Not paired")}</td>
+                    <td>${escapeHtml(d.status)}</td>
+                    <td>${new Date(d.created_at).toLocaleString()}</td>
+                </tr>
+            `).join("")
+            : `
+                <tr>
+                    <td colspan="3">
+                        No deployments yet.
+                    </td>
+                </tr>
+            `;
+
+    res.send(page("Dashboard", `
+        <h2>WELCOME, ${escapeHtml(user.username)}</h2>
+
+        <div class="stat">
+            <strong>Email</strong><br>
+            ${escapeHtml(user.email)}
+        </div>
+
+        <div class="stat">
+            <strong>Account</strong><br>
+            <span class="badge">
+                ${escapeHtml(user.role.toUpperCase())}
+            </span>
+        </div>
+
+        <form action="/deploy" method="get">
+            <button>DEPLOY VENOM X</button>
+        </form>
+
+        <h3>Your deployments</h3>
+
+        <table>
+            <tr>
+                <th>Number</th>
+                <th>Status</th>
+                <th>Date</th>
+            </tr>
+
+            ${deploymentRows}
+        </table>
+
+        ${
+            user.role === "admin"
+                ? `
+                <form action="/admin" method="get">
+                    <button>ADMIN PANEL</button>
+                </form>
+                `
+                : ""
+        }
+
+        <form action="/logout" method="post">
+            <button>LOGOUT</button>
+        </form>
+    `));
+});
+
+/* =========================================================
+   DEPLOY PAGE
+========================================================= */
+
+app.get("/deploy", requireLogin, (req, res) => {
+    res.send(page("Deploy VENOM X", `
+        <h2>DEPLOY VENOM X</h2>
+
+        <div class="info">
+            Your account is ready.
+            Deployment configuration will be connected
+            to the WhatsApp session manager next.
+        </div>
+
+        <form method="POST" action="/deploy">
+
+            <input
+                name="phone"
+                placeholder="WhatsApp number e.g. 2349163743900"
+                required
+            >
+
+            <button type="submit">
+                START DEPLOYMENT
+            </button>
+        </form>
+
+        <div class="links">
+            <a href="/dashboard">Back to dashboard</a>
+        </div>
+    `));
+});
+
+app.post("/deploy", requireLogin, async (req, res) => {
+    const phone =
+        String(req.body.phone || "")
+            .replace(/\D/g, "");
+
+    if (
+        phone.length < 8 ||
+        phone.length > 15
+    ) {
+        return res.send(page("Deployment failed", `
+            <div class="error">
+                Invalid WhatsApp number.
+            </div>
+
+            <a href="/deploy">Try again</a>
+        `));
+    }
+
+    await query(`
+        INSERT INTO deployments
+            (user_id,phone,status)
+        VALUES
+            ($1,$2,'pending')
+    `, [
+        req.session.user.id,
+        phone
+    ]);
+
+    res.send(page("Deployment Created", `
+        <div class="success">
+            Deployment request created successfully.
+        </div>
+
+        <div class="info">
+            WhatsApp number:
+            <strong>+${escapeHtml(phone)}</strong>
+            <br><br>
+            Status: PENDING
+        </div>
+
+        <div class="links">
+            <a href="/dashboard">Return to dashboard</a>
+        </div>
+    `));
+});
+
+/* =========================================================
+   LOGOUT
+========================================================= */
+
+app.post("/logout", (req, res) => {
+    req.session.destroy(() => {
+        res.redirect("/");
+    });
+});
+
+/* =========================================================
+   ADMIN
+========================================================= */
+
+app.get("/admin", requireAdmin, async (req, res) => {
+    const usersResult = await query(`
+        SELECT id,username,email,role,created_at
+        FROM users
+        ORDER BY id DESC
+    `);
+
+    const keysResult = await query(`
+        SELECT id,key,duration,active,expires_at,created_at
+        FROM license_keys
+        ORDER BY id DESC
+    `);
+
+    const deploymentsResult = await query(`
+        SELECT
+            d.id,
+            d.phone,
+            d.status,
+            d.created_at,
+            u.username,
+            u.email
+        FROM deployments d
+        JOIN users u ON u.id = d.user_id
+        ORDER BY d.id DESC
+    `);
+
+    const users = usersResult.rows;
+    const keys = keysResult.rows;
+    const deployments = deploymentsResult.rows;
+
+    const userRows =
+        users.map(user => `
+            <tr>
+                <td>${escapeHtml(user.username)}</td>
+                <td>${escapeHtml(user.email)}</td>
+                <td>${escapeHtml(user.role)}</td>
+            </tr>
+        `).join("");
+
+    const keyRows =
+        keys.length
+            ? keys.map(key => `
+                <tr>
+                    <td>${escapeHtml(key.key)}</td>
+                    <td>${escapeHtml(key.duration)}</td>
+                    <td>${key.active ? "ACTIVE" : "INACTIVE"}</td>
+                </tr>
+            `).join("")
+            : `
+                <tr>
+                    <td colspan="3">
+                        No license keys yet.
+                    </td>
+                </tr>
+            `;
+
+    const deploymentRows =
+        deployments.length
+            ? deployments.map(d => `
+                <tr>
+                    <td>${escapeHtml(d.username)}</td>
+                    <td>${escapeHtml(d.phone || "")}</td>
+                    <td>${escapeHtml(d.status)}</td>
+                </tr>
+            `).join("")
+            : `
+                <tr>
+                    <td colspan="3">
+                        No deployments.
+                    </td>
+                </tr>
+            `;
+
+    res.send(page("Admin Panel", `
+        <h2>VENOM X ADMIN</h2>
+
+        <div class="stat">
+            Users: <strong>${users.length}</strong>
+        </div>
+
+        <h3>Generate License Key</h3>
+
+        <form method="POST" action="/admin/generate-key">
+
+            <select
+                name="duration"
+                style="
+                    width:100%;
+                    padding:14px;
+                    margin:7px 0;
+                    border-radius:10px;
+                    background:#151515;
+                    color:white;
+                    border:1px solid #292929;
+                "
+            >
+                <option value="1week">1 Week</option>
+                <option value="2weeks">2 Weeks</option>
+                <option value="1month">1 Month</option>
+                <option value="unlimited">Unlimited</option>
+            </select>
+
+            <button type="submit">
+                GENERATE KEY
+            </button>
+        </form>
+
+        <h3>Users</h3>
+
+        <table>
+            <tr>
+                <th>User</th>
+                <th>Email</th>
+                <th>Role</th>
+            </tr>
+            ${userRows}
+        </table>
+
+        <h3>License Keys</h3>
+
+        <table>
+            <tr>
+                <th>Key</th>
+                <th>Duration</th>
+                <th>Status</th>
+            </tr>
+            ${keyRows}
+        </table>
+
+        <h3>Deployments</h3>
+
+        <table>
+            <tr>
+                <th>User</th>
+                <th>Number</th>
+                <th>Status</th>
+            </tr>
+            ${deploymentRows}
+        </table>
+
+        <div class="links">
+            <a href="/dashboard">Dashboard</a>
+        </div>
+    `));
+});
+
+/* =========================================================
+   ADMIN KEY GENERATOR
+========================================================= */
+
+app.post("/admin/generate-key", requireAdmin, async (req, res) => {
+    const duration =
+        String(req.body.duration || "");
+
+    const allowed = [
+        "1week",
+        "2weeks",
+        "1month",
+        "unlimited"
+    ];
+
+    if (!allowed.includes(duration)) {
+        return res.status(400).send(
+            page(
+                "Invalid duration",
+                `<div class="error">Invalid license duration.</div>`
+            )
+        );
+    }
+
+    const randomA =
+        crypto.randomBytes(4)
+            .toString("hex")
+            .toUpperCase();
+
+    const randomB =
+        crypto.randomBytes(4)
+            .toString("hex")
+            .toUpperCase();
+
+    const key =
+        `VX-${randomA}-${randomB}`;
+
+    let expiresAt = null;
+
+    if (duration === "1week") {
+        expiresAt =
+            new Date(
+                Date.now() + 7 * 24 * 60 * 60 * 1000
+            );
+    }
+
+    if (duration === "2weeks") {
+        expiresAt =
+            new Date(
+                Date.now() + 14 * 24 * 60 * 60 * 1000
+            );
+    }
+
+    if (duration === "1month") {
+        expiresAt =
+            new Date(
+                Date.now() + 30 * 24 * 60 * 60 * 1000
+            );
+    }
+
+    await query(`
+        INSERT INTO license_keys
+            (key,duration,expires_at)
+        VALUES
+            ($1,$2,$3)
+    `, [
+        key,
+        duration,
+        expiresAt
+    ]);
+
+    res.send(page("License Generated", `
+        <div class="success">
+            License generated successfully.
+        </div>
+
+        <div class="stat">
+            <strong>KEY</strong><br><br>
+            ${escapeHtml(key)}
+        </div>
+
+        <div class="stat">
+            <strong>DURATION</strong><br>
+            ${escapeHtml(duration)}
+        </div>
+
+        <div class="links">
+            <a href="/admin">Back to admin</a>
+        </div>
+    `));
+});
+
+/* =========================================================
+   START
+========================================================= */
+
+async function start() {
+    try {
+        await initDatabase();
+
+        const adminEmail =
+            String(process.env.ADMIN_EMAIL || "")
+                .trim()
+                .toLowerCase();
+
+        if (adminEmail) {
+            await query(`
+                UPDATE users
+                SET role = 'admin'
+                WHERE email = $1
+            `, [adminEmail]);
+
+            console.log(
+                "Admin account checked:",
+                adminEmail
+            );
+        }
+
+        app.listen(PORT, "0.0.0.0", () => {
+            console.log(
+                "VENOM X PANEL running on port " + PORT
+            );
+        });
+
+    } catch (err) {
+        console.error(
+            "VENOM X PANEL STARTUP ERROR:",
+            err.message
+        );
+
+        process.exit(1);
+    }
+}
+
+process.on("SIGINT", async () => {
+    await pool.end();
+    process.exit(0);
+});
+
+process.on("SIGTERM", async () => {
+    await pool.end();
+    process.exit(0);
+});
+
+start();

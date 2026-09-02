@@ -47,8 +47,8 @@ module.exports = function (sock) {
                 if (Array.isArray(command.aliases)) {
                     for (let a = 0; a < command.aliases.length; a++) {
                         const alias = command.aliases[a];
-                        if (typeof alias === "string") {
-                            commands.set(alias.toLowerCase(), command);
+                        if (typeof alias === "string" && alias.trim()) {
+                            commands.set(alias.toLowerCase().trim(), command);
                         }
                     }
                 }
@@ -67,6 +67,7 @@ module.exports = function (sock) {
         help: "📚",
         ping: "⚡",
         alive: "💚",
+        up: "⚡",
         owner: "👑",
         ai: "🧠",
         sticker: "🖼️",
@@ -75,29 +76,49 @@ module.exports = function (sock) {
         antilink: "🛡️",
         play: "🎵",
         sleep: "😴",
-        up: "⚡",
         refresh: "🔄",
         welcome: "👋",
         goodbye: "👋",
         hd: "✨",
+        private: "🔒",
+        public: "🌍",
         default: "⚙️"
     };
+
+    function normalizeId(value) {
+        return String(value || "").replace(/[^0-9]/g, "");
+    }
+
+    function isOwnerSender(msg, settings, sender, senderPn, participantPn) {
+        if (msg && msg.key && msg.key.fromMe) return true;
+
+        const ownerNumber = normalizeId(settings.ownerNumber);
+        const ownerLid = normalizeId(settings.ownerLid);
+
+        const candidates = [
+            normalizeId(sender),
+            normalizeId(senderPn),
+            normalizeId(participantPn),
+            normalizeId(msg && msg.key ? msg.key.participant : ""),
+            normalizeId(msg && msg.key ? msg.key.remoteJid : "")
+        ];
+
+        for (let i = 0; i < candidates.length; i++) {
+            const id = candidates[i];
+            if (!id) continue;
+            if (ownerNumber && id === ownerNumber) return true;
+            if (ownerLid && id === ownerLid) return true;
+        }
+
+        return false;
+    }
 
     console.log("📡 Registering messages.upsert listener...");
 
     sock.ev.on("messages.upsert", function (payload) {
         try {
-            const type = payload && payload.type ? payload.type : "unknown";
             const messages = payload && payload.messages ? payload.messages : null;
-
             if (!Array.isArray(messages) || messages.length === 0) return;
-
-            // Always log so we can see if events arrive after pairing
-            // only log when useful
-if (type === "notify") {
-    // silent, or:
-    // console.log("📡 UPSERT:", type, messages.length);
-}
 
             for (let i = 0; i < messages.length; i++) {
                 const msg = messages[i];
@@ -136,7 +157,6 @@ if (type === "notify") {
                 global.processedMessages.clear();
             }
 
-            // No strict age filter (pairing/reconnect safe)
             const settings = getSettings();
             if (!settings || typeof settings !== "object") return;
 
@@ -148,18 +168,7 @@ if (type === "notify") {
             const sender = msg.key.participant || msg.key.remoteJid;
             const isGroup = String(from).indexOf("@g.us") !== -1;
 
-            function normalizeId(value) {
-                return String(value || "").replace(/[^0-9]/g, "");
-            }
-
-            const senderNumber = normalizeId(sender);
-            const ownerNumber = normalizeId(settings.ownerNumber);
-            const ownerLid = normalizeId(settings.ownerLid);
-
-            const isOwner =
-                Boolean(msg.key.fromMe) ||
-                (senderNumber && senderNumber === ownerNumber) ||
-                (senderNumber && senderNumber === ownerLid);
+            const isOwner = isOwnerSender(msg, settings, sender, senderPn, participantPn);
 
             const allowSelf = settings.allowSelf !== false;
             if (msg.key.fromMe && !allowSelf && !isOwner) return;
@@ -287,7 +296,8 @@ if (type === "notify") {
                 return;
             }
 
-            if (settings.mode === "private" && !isOwner && isGroup) {
+            // Private mode: only owner can run commands
+            if (String(settings.mode || "").toLowerCase() === "private" && !isOwner) {
                 return;
             }
 
