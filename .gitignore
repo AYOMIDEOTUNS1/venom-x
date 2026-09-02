@@ -124,3 +124,6 @@ data/*.json
 database/*.json
 data/*.json
 settings.json
+sessions/
+auth_info_baileys/
+node_modules/
