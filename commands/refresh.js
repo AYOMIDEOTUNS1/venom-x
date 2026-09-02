@@ -1,36 +1,37 @@
 const botState = require("../lib/botState");
+const { isOwnerContext } = require("../lib/ownerCheck");
 
 module.exports = {
     name: "refresh",
     aliases: ["clearcache", "reloadmem"],
 
-    run: async ({ sock, reply, isOwner }) => {
-        if (!isOwner) return reply("❌ Owner only.");
+    run: async function (ctx) {
+        const { sock, reply } = ctx;
+
+        if (!isOwnerContext(ctx)) {
+            return reply("❌ Owner only.");
+        }
 
         botState.refreshBot();
 
-        // Reload commands if available
         try {
             if (typeof sock.reloadCommands === "function") {
                 sock.reloadCommands();
             }
-        } catch {}
+        } catch (e) {}
 
-        // Clear global processed-message memory if present
         try {
             if (global.processedMessages && typeof global.processedMessages.clear === "function") {
                 global.processedMessages.clear();
             }
-        } catch {}
+        } catch (e) {}
 
         return reply(
-`╭━━〔 🔄 VENOM X REFRESH 〕━━⬣
-
-✅ Bot memory refreshed
-✅ Command cache reloaded
-✅ Spam buffer cleared
-
-╰━━━━━━━━━━━━━━━━⬣`
+"╭━━〔 🔄 VENOM X REFRESH 〕━━⬣\n\n" +
+"✅ Bot memory refreshed\n" +
+"✅ Command cache reloaded\n" +
+"✅ Spam buffer cleared\n\n" +
+"╰━━━━━━━━━━━━━━━━⬣"
         );
     }
 };

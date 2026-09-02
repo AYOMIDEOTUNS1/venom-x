@@ -1,68 +1,33 @@
+const { isOwnerContext } = require("../lib/ownerCheck");
+
 module.exports = {
     name: "update",
 
-    run: async ({ sock, from, message, isOwner }) => {
+    run: async function (ctx) {
+        const { sock, from, message, reply } = ctx;
 
-        if (!isOwner) {
-            return sock.sendMessage(
-                from,
-                {
-                    text: "❌ Only the VENOM X owner can use .update."
-                },
-                { quoted: message }
-            );
+        if (!isOwnerContext(ctx)) {
+            return reply("❌ Only the VENOM X owner can use #update.");
         }
 
         if (typeof sock.reloadCommands !== "function") {
-            return sock.sendMessage(
-                from,
-                {
-                    text:
-                        "❌ Command reload system is not available."
-                },
-                { quoted: message }
-            );
+            return reply("❌ Command reload system is not available.");
         }
 
         try {
-            await sock.sendMessage(
-                from,
-                {
-                    text: "🔄 Reloading VENOM X commands..."
-                },
-                { quoted: message }
-            );
-
+            await reply("🔄 Reloading VENOM X commands...");
             sock.reloadCommands();
-
-            await sock.sendMessage(
-                from,
-                {
-                    text:
-`╭━━〔 🔄 VENOM X UPDATE 〕━━⬣
-┃
-┃ ✅ Commands reloaded
-┃ ⚡ VENOM X is updated
-┃ 🚀 No restart required
-╰━━━━━━━━━━━━━━━━⬣`
-                },
-                { quoted: message }
+            return reply(
+"╭━━〔 🔄 VENOM X UPDATE 〕━━⬣\n" +
+"┃\n" +
+"┃ ✅ Commands reloaded\n" +
+"┃ ⚡ VENOM X is updated\n" +
+"┃ 🚀 No restart required\n" +
+"╰━━━━━━━━━━━━━━━━⬣"
             );
-
         } catch (err) {
-            console.log(
-                "UPDATE ERROR:",
-                err.message
-            );
-
-            await sock.sendMessage(
-                from,
-                {
-                    text:
-                        `❌ UPDATE ERROR: ${err.message}`
-                },
-                { quoted: message }
-            );
+            console.log("UPDATE ERROR:", err.message);
+            return reply("❌ UPDATE ERROR: " + err.message);
         }
     }
 };
