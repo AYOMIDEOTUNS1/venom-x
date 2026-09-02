@@ -89,27 +89,42 @@ module.exports = function (sock) {
         return String(value || "").replace(/[^0-9]/g, "");
     }
 
-    function isOwnerSender(msg, settings, sender, senderPn, participantPn) {
+    function isOwnerSender(msg, settings, sender, senderPn, participantPn, sock) {
         if (msg && msg.key && msg.key.fromMe) return true;
 
+        const owners = [];
         const ownerNumber = normalizeId(settings.ownerNumber);
         const ownerLid = normalizeId(settings.ownerLid);
+        if (ownerNumber) owners.push(ownerNumber);
+        if (ownerLid) owners.push(ownerLid);
+        try {
+            if (sock && sock.user) {
+                const bot = normalizeId(sock.user.id || sock.user.lid);
+                if (bot) owners.push(bot);
+            }
+        } catch (e) {}
 
+        const key = msg && msg.key ? msg.key : {};
         const candidates = [
             normalizeId(sender),
             normalizeId(senderPn),
             normalizeId(participantPn),
-            normalizeId(msg && msg.key ? msg.key.participant : ""),
-            normalizeId(msg && msg.key ? msg.key.remoteJid : "")
+            normalizeId(key.participant),
+            normalizeId(key.participantPn),
+            normalizeId(key.senderPn),
+            normalizeId(key.remoteJid)
         ];
 
         for (let i = 0; i < candidates.length; i++) {
             const id = candidates[i];
             if (!id) continue;
-            if (ownerNumber && id === ownerNumber) return true;
-            if (ownerLid && id === ownerLid) return true;
+            for (let j = 0; j < owners.length; j++) {
+                if (id === owners[j]) return true;
+                if (id.length >= 10 && owners[j].length >= 10 && id.slice(-10) === owners[j].slice(-10)) {
+                    return true;
+                }
+            }
         }
-
         return false;
     }
 
@@ -168,7 +183,7 @@ module.exports = function (sock) {
             const sender = msg.key.participant || msg.key.remoteJid;
             const isGroup = String(from).indexOf("@g.us") !== -1;
 
-            const isOwner = isOwnerSender(msg, settings, sender, senderPn, participantPn);
+            const isOwner = isOwnerSender(msg, settings, sender, senderPn, participantPn, sock);
 
             const allowSelf = settings.allowSelf !== false;
             if (msg.key.fromMe && !allowSelf && !isOwner) return;
