@@ -24,6 +24,26 @@ function startTelegramBot() {
         polling: true
     });
 
+    // Side menu (Telegram / commands list)
+    bot.setMyCommands([
+        { command: "start", description: "Start the bot / main menu" },
+        { command: "help", description: "Help & commands" },
+        { command: "activate", description: "Activate license code" },
+        { command: "pair", description: "Pair WhatsApp number" },
+        { command: "status", description: "My status" },
+        { command: "numbers", description: "My WhatsApp numbers" },
+        { command: "disconnect", description: "Disconnect sessions" },
+        { command: "unpair", description: "Delete a WhatsApp session" },
+        { command: "genkey", description: "Owner: generate license key" },
+        { command: "licenses", description: "Owner: list licenses" },
+        { command: "users", description: "Owner: active users" },
+        { command: "stopall", description: "Owner: stop all sessions" }
+    ]).then(function () {
+        console.log("📋 Telegram command menu set");
+    }).catch(function (err) {
+        console.log("⚠️ setMyCommands failed:", err && err.message ? err.message : err);
+    });
+
     const waitingNumber = new Map();
 
     async function send(chatId, text, options = {}) {
