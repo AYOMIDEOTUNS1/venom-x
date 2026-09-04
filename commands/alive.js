@@ -18,7 +18,7 @@ function formatUptime(seconds) {
 
 module.exports = {
     name: "alive",
-    aliases: ["up", "up1"],
+    aliases: ["up1"],
 
     run: async function ({ reply }) {
         const uptime = formatUptime(process.uptime());
