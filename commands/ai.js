@@ -154,10 +154,12 @@ module.exports = {
         const question = args.join(" ").trim();
         if (!question) return reply("Usage: #ai <question>");
 
-        const settings = getSettings();
-        if (!settings.groqApiKey && !settings.geminiApiKey) {
-            return reply("❌ No AI keys in settings.json\nAdd groqApiKey or geminiApiKey");
-        }
+        const groqKey = process.env.GROQ_API_KEY || settings.groqApiKey || "";
+const geminiKey = process.env.GEMINI_API_KEY || settings.geminiApiKey || "";
+
+if (!groqKey && !geminiKey) {
+  return reply("❌ No AI keys...\nAdd GROQ_API_KEY on Render Environment");
+}
 
         const memory = loadMemory();
         const uid = String((message && message.key && (message.key.participant || message.key.remoteJid)) || sender || "user");
