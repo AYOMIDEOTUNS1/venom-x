@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const axios = require("axios");
+const { getSettings } = require("../lib/settingsCache");
 
 const MEMORY_FILE = path.join(__dirname, "..", "database", "ai_memory.json");
 const MAX_TURNS = 12;
@@ -20,15 +21,6 @@ function saveMemory(data) {
         if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
         fs.writeFileSync(MEMORY_FILE, JSON.stringify(data, null, 2));
     } catch (e) {}
-}
-
-function getSettings() {
-    try {
-        return JSON.parse(fs.readFileSync(path.join(__dirname, "..", "settings.json"), "utf8"));
-    } catch (e) {
-        console.log("SETTINGS JSON ERROR:", e.message);
-        return {};
-    }
 }
 
 function systemPrompt(settings) {
@@ -63,7 +55,6 @@ async function askGroq(apiKey, messages) {
         ];
     }
 
-    // prefer useful chat models first
     const preferred = models.filter(function (id) {
         return /llama|gemma|mixtral|qwen|gpt/i.test(id);
     });
@@ -89,7 +80,12 @@ async function askGroq(apiKey, messages) {
                     }
                 }
             );
-            const text = res.data && res.data.choices && res.data.choices[0] && res.data.choices[0].message && res.data.choices[0].message.content;
+            const text =
+                res.data &&
+                res.data.choices &&
+                res.data.choices[0] &&
+                res.data.choices[0].message &&
+                res.data.choices[0].message.content;
             if (text) return { text: String(text).trim(), model: model };
         } catch (err) {
             lastErr = err;
@@ -101,6 +97,7 @@ async function askGroq(apiKey, messages) {
 
 async function askGemini(apiKey, prompt) {
     const models = [
+        "gemini-2.0-flash",
         "gemini-1.5-flash",
         "gemini-1.5-flash-latest",
         "gemini-1.5-pro",
@@ -154,17 +151,33 @@ module.exports = {
         const question = args.join(" ").trim();
         if (!question) return reply("Usage: #ai <question>");
 
-        const groqKey = process.env.GROQ_API_KEY || settings.groqApiKey || "";
-const geminiKey = process.env.GEMINI_API_KEY || settings.geminiApiKey || "";
+        const settings = getSettings();
+        const groqKey = String(
+            process.env.GROQ_API_KEY || settings.groqApiKey || ""
+        ).trim();
+        const geminiKey = String(
+            process.env.GEMINI_API_KEY || settings.geminiApiKey || ""
+        ).trim();
 
-if (!groqKey && !geminiKey) {
-  return reply("❌ No AI keys...\nAdd GROQ_API_KEY on Render Environment");
-}
+        if (!groqKey && !geminiKey) {
+            return reply(
+                "❌ No AI keys.\n\nAdd on Render Environment:\nGROQ_API_KEY\nor GEMINI_API_KEY"
+            );
+        }
 
         const memory = loadMemory();
-        const uid = String((message && message.key && (message.key.participant || message.key.remoteJid)) || sender || "user");
+        const uid = String(
+            (message &&
+                message.key &&
+                (message.key.participant || message.key.remoteJid)) ||
+                sender ||
+                "user"
+        );
 
-        if (question.toLowerCase() === "clear memory" || question.toLowerCase() === "reset") {
+        if (
+            question.toLowerCase() === "clear memory" ||
+            question.toLowerCase() === "reset"
+        ) {
             delete memory[uid];
             saveMemory(memory);
             return reply("✅ AI memory cleared.");
@@ -182,9 +195,9 @@ if (!groqKey && !geminiKey) {
             let answer = null;
             let engine = "";
 
-            if (settings.groqApiKey) {
+            if (groqKey) {
                 try {
-                    const r = await askGroq(String(settings.groqApiKey).trim(), messages);
+                    const r = await askGroq(groqKey, messages);
                     answer = r.text;
                     engine = "Groq (" + r.model + ")";
                 } catch (e) {
@@ -192,9 +205,12 @@ if (!groqKey && !geminiKey) {
                 }
             }
 
-            if (!answer && settings.geminiApiKey) {
+            if (!answer && geminiKey) {
                 try {
-                    const r = await askGemini(String(settings.geminiApiKey).trim(), systemPrompt(settings) + "\n\nUSER: " + question);
+                    const r = await askGemini(
+                        geminiKey,
+                        systemPrompt(settings) + "\n\nUSER: " + question
+                    );
                     answer = r.text;
                     engine = "Gemini (" + r.model + ")";
                 } catch (e) {
@@ -211,7 +227,13 @@ if (!groqKey && !geminiKey) {
             memory[uid] = memory[uid].slice(-(MAX_TURNS * 2));
             saveMemory(memory);
 
-            return reply("╭━━〔 🧠 VENOM AI 〕━━⬣\n\n" + answer + "\n\n⚡ " + engine + "\n╰━━━━━━━━━━━━━━━━⬣");
+            return reply(
+                "╭━━〔 🧠 VENOM AI 〕━━⬣\n\n" +
+                    answer +
+                    "\n\n⚡ " +
+                    engine +
+                    "\n╰━━━━━━━━━━━━━━━━⬣"
+            );
         } catch (err) {
             return reply("❌ AI failed:\n" + err.message);
         }
