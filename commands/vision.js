@@ -4,7 +4,12 @@ const axios = require("axios");
 const { getSettings } = require("../lib/settingsCache");
 
 async function geminiVision(apiKey, base64, mime, prompt) {
-    const models = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"];
+    const models = [
+        "gemini-2.0-flash",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-flash",
+        "gemini-1.5-pro"
+    ];
     let lastErr = null;
 
     for (let i = 0; i < models.length; i++) {
@@ -14,7 +19,7 @@ async function geminiVision(apiKey, base64, mime, prompt) {
                 "https://generativelanguage.googleapis.com/v1beta/models/" +
                 model +
                 ":generateContent?key=" +
-                apiKey;
+                encodeURIComponent(apiKey);
 
             const res = await axios.post(
                 url,
@@ -33,25 +38,38 @@ async function geminiVision(apiKey, base64, mime, prompt) {
                         }
                     ]
                 },
-                { timeout: 60000 }
+                { timeout: 90000 }
             );
 
-            const text =
+            const parts =
                 res.data &&
                 res.data.candidates &&
                 res.data.candidates[0] &&
                 res.data.candidates[0].content &&
-                res.data.candidates[0].content.parts &&
-                res.data.candidates[0].content.parts[0] &&
-                res.data.candidates[0].content.parts[0].text;
+                res.data.candidates[0].content.parts;
 
-            if (text) return String(text).trim();
+            if (parts && parts.length) {
+                const text = parts
+                    .map(function (p) {
+                        return p.text || "";
+                    })
+                    .join("\n")
+                    .trim();
+                if (text) return text;
+            }
+            lastErr = new Error("Empty vision response from " + model);
         } catch (err) {
-            lastErr = err;
-            console.log("VISION model fail:", model, (err.response && err.response.status) || err.message);
+            const status = err.response && err.response.status;
+            const data = err.response && err.response.data;
+            const msg =
+                (data && data.error && data.error.message) ||
+                err.message ||
+                String(err);
+            console.log("VISION fail:", model, status, msg);
+            lastErr = new Error(msg);
         }
     }
-    throw lastErr || new Error("Vision failed");
+    throw lastErr || new Error("All vision models failed");
 }
 
 module.exports = {
@@ -67,7 +85,9 @@ module.exports = {
 
             if (!context || !context.quotedMessage) {
                 return reply(
-"╭━━〔 👁️ VENOM AI VISION 〕━━⬣\n\nReply to an image:\n#vision\n#vision what is this?\n\n╰━━━━━━━━━━━━━━━━⬣"
+"╭━━〔 👁️ VENOM AI VISION 〕━━⬣\n\n" +
+"Reply to an image:\n#vision\n#vision what is in this photo?\n\n" +
+"╰━━━━━━━━━━━━━━━━⬣"
                 );
             }
 
@@ -82,38 +102,45 @@ module.exports = {
             ).trim();
 
             if (!apiKey) {
-                return reply("❌ No GEMINI_API_KEY on Render Environment.");
+                return reply(
+                    "❌ No Gemini key.\nAdd GEMINI_API_KEY in Render Environment."
+                );
             }
 
             const mime = quoted.imageMessage.mimetype || "image/jpeg";
             const userPrompt =
-                (args && args.length ? args.join(" ") : "") ||
-                "Describe this image clearly: objects, people, text, colors, scene, summary.";
+                (args && args.length ? args.join(" ").trim() : "") ||
+                "Describe this image in detail: scene, objects, people, text, colors, summary.";
 
-            await reply("📥 Reading image...");
+            await reply("📥 Downloading image...");
 
-            const media = await downloadMediaMessage(
-                {
-                    key: {
-                        remoteJid: from,
-                        id: context.stanzaId,
-                        participant: context.participant
+            let media;
+            try {
+                media = await downloadMediaMessage(
+                    {
+                        key: {
+                            remoteJid: from,
+                            id: context.stanzaId,
+                            participant: context.participant
+                        },
+                        message: quoted
                     },
-                    message: quoted
-                },
-                "buffer",
-                {},
-                {
-                    logger: pino({ level: "silent" }),
-                    reuploadRequest: sock.updateMediaMessage
-                }
-            );
-
-            if (!media || !media.length) {
-                return reply("❌ Could not download image.");
+                    "buffer",
+                    {},
+                    {
+                        logger: pino({ level: "silent" }),
+                        reuploadRequest: sock.updateMediaMessage
+                    }
+                );
+            } catch (e) {
+                return reply("❌ Image download failed:\n" + e.message);
             }
 
-            await reply("🧠 Analyzing...");
+            if (!media || !media.length) {
+                return reply("❌ Empty image data.");
+            }
+
+            await reply("🧠 Analyzing with Gemini...");
 
             const result = await geminiVision(
                 apiKey,
@@ -129,11 +156,14 @@ module.exports = {
             );
         } catch (err) {
             console.log("VISION ERROR:", err.message);
-            const msg = err.message || String(err);
+            const msg = String(err.message || err);
             if (/429|quota|RESOURCE_EXHAUSTED/i.test(msg)) {
                 return reply("⚠️ Gemini quota exhausted. Try later.");
             }
-            return reply("❌ Vision error:\n" + msg);
+            if (/API_KEY|invalid|403/i.test(msg)) {
+                return reply("❌ Invalid GEMINI_API_KEY on Render.");
+            }
+            return reply("❌ Vision error:\n" + msg.slice(0, 400));
         }
     }
 };
