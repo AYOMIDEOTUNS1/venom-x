@@ -7,6 +7,10 @@ const {
     normalizePhone,
     isValidPhone
 } = require(path.join(__dirname, "pairing"));
+const {
+    getProfile,
+    setProfile
+} = require(path.join(__dirname, "..", "lib", "userProfile"));
 
 function startTelegramBot() {
     const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -45,6 +49,8 @@ function startTelegramBot() {
     });
 
     const waitingNumber = new Map();
+    const waitingName = new Map();
+    const waitingLocation = new Map();
 
     async function send(chatId, text, options = {}) {
         try {
@@ -164,6 +170,59 @@ Alias:
             ]
         }
     };
+
+    
+    function profileReady(uid) {
+        const p = getProfile(uid) || {};
+        return Boolean(p.name && p.location);
+    }
+
+    async function askName(chatId) {
+        return send(
+            chatId,
+            "👤 *What is your name?*\n\nType your name (example: `John`).",
+            { parse_mode: "Markdown" }
+        );
+    }
+
+    async function askLocation(chatId) {
+        return send(
+            chatId,
+            "📍 *Where are you located?*\n\nCity / state (example: `Osun, Nigeria`).\nWeather will use this location.",
+            { parse_mode: "Markdown" }
+        );
+    }
+
+    async function ensureProfileThenPair(uid, chatId, maybeNumber) {
+        const p = getProfile(uid) || {};
+        if (!p.name) {
+            waitingName.set(uid, true);
+            waitingLocation.delete(uid);
+            waitingNumber.delete(uid);
+            return askName(chatId);
+        }
+        if (!p.location) {
+            waitingLocation.set(uid, true);
+            waitingName.delete(uid);
+            waitingNumber.delete(uid);
+            return askLocation(chatId);
+        }
+        if (maybeNumber && isValidPhone(maybeNumber)) {
+            return startPair(uid, chatId, maybeNumber);
+        }
+        waitingNumber.set(uid, true);
+        waitingName.delete(uid);
+        waitingLocation.delete(uid);
+        return send(
+            chatId,
+            "📞 *Send your WhatsApp number*\n\nCountry code, no +\nExample: `2348160000000`\n\n👤 Name: " +
+                p.name +
+                "\n📍 Location: " +
+                p.location,
+            { parse_mode: "Markdown" }
+        );
+    }
+
 
     async function startPair(uid, chatId, phoneRaw) {
         const phone = normalizePhone(phoneRaw);
@@ -706,27 +765,7 @@ to completely remove it.
                 );
             }
 
-            waitingNumber.set(
-                uid,
-                true
-            );
-
-            await send(
-                chatId,
-`📞 *Send your WhatsApp number*
-
-Country code required.
-Do not use +.
-
-Example:
-
-\`2348160000000\`
-
-👑 Owner: ${ownerUsername}`,
-                {
-                    parse_mode: "Markdown"
-                }
-            );
+            await ensureProfileThenPair(uid, chatId, maybeNumber || null);
         }
     );
 
@@ -1305,40 +1344,57 @@ Use /unpair NUMBER to completely delete a saved WhatsApp session.
                 const uid =
                     String(msg.from.id);
 
-                if (
-                    !waitingNumber.get(uid)
-                ) {
+                
+                // NAME
+                if (waitingName.get(uid)) {
+                    const name = String(msg.text || "").trim().slice(0, 40);
+                    if (name.length < 2) {
+                        return send(msg.chat.id, "❌ Name too short. Try again.");
+                    }
+                    setProfile(uid, { name: name });
+                    waitingName.delete(uid);
+                    waitingLocation.set(uid, true);
+                    return askLocation(msg.chat.id);
+                }
+
+                // LOCATION
+                if (waitingLocation.get(uid)) {
+                    const location = String(msg.text || "").trim().slice(0, 80);
+                    if (location.length < 2) {
+                        return send(msg.chat.id, "❌ Location too short. Example: Osun, Nigeria");
+                    }
+                    setProfile(uid, { location: location });
+                    waitingLocation.delete(uid);
+                    waitingNumber.set(uid, true);
+                    const p = getProfile(uid) || {};
+                    return send(
+                        msg.chat.id,
+                        "📞 *Send your WhatsApp number*\n\nCountry code, no +\nExample: `2348160000000`\n\n👤 " +
+                            (p.name || "") +
+                            "\n📍 " +
+                            (p.location || ""),
+                        { parse_mode: "Markdown" }
+                    );
+                }
+
+                if (!waitingNumber.get(uid)) {
                     return;
                 }
 
-                const phone =
-                    normalizePhone(
-                        msg.text
-                    );
+                const phone = normalizePhone(msg.text);
 
                 if (!phone) {
                     return send(
                         msg.chat.id,
-                        `❌ Invalid number.
-
-Example: \`2348160000000\`
-
-👑 Owner: ${ownerUsername}`,
-                        {
-                            parse_mode: "Markdown"
-                        }
+                        "❌ Invalid number.\n\nExample: `2348160000000`",
+                        { parse_mode: "Markdown" }
                     );
                 }
 
-                waitingNumber.delete(
-                    uid
-                );
+                waitingNumber.delete(uid);
 
-                await startPair(
-                    uid,
-                    msg.chat.id,
-                    phone
-                );
+                await startPair(uid, msg.chat.id, phone);
+
 
             } catch (err) {
                 console.log(

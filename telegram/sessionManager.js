@@ -11,6 +11,8 @@ const fetchLatestBaileysVersion = baileys.fetchLatestBaileysVersion;
 const makeCacheableSignalKeyStore = baileys.makeCacheableSignalKeyStore;
 const Browsers = baileys.Browsers;
 
+const { getProfile } = require("../lib/userProfile");
+
 const logger = pino({
     level: "silent"
 });
@@ -742,9 +744,12 @@ async function createSocket(
               1
             : 1;
 
+    const profile = (typeof getProfile === "function" ? getProfile(uid) : null) || {};
+
     const session = {
         telegramUserId: uid,
         phoneNumber: phone,
+        profile: profile,
 
         status: "connecting",
 
@@ -1026,6 +1031,13 @@ async function createSocket(
                 session.badSessionTries =
                     0;
 
+                try {
+                    session.profile = (typeof getProfile === "function" ? getProfile(uid) : null) || session.profile || {};
+                    sock.venomTelegramId = uid;
+                    sock.venomPhone = phone;
+                    sock.venomProfile = session.profile;
+                } catch (e) {}
+
                 /*
                  * Load handlers ONLY here.
                  */
@@ -1033,6 +1045,8 @@ async function createSocket(
                     sock,
                     session
                 );
+
+                console.log("[" + uid + "/" + phone + "] handlers loaded");
 
                 if (
                     !isCurrentSession(
