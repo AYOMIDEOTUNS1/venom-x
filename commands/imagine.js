@@ -1,164 +1,73 @@
-const imageHistory = require("../lib/imageHistory");
 const { generateImage } = require("../lib/imagineEngine");
-const imageQueue = require("../lib/imageQueue");
+
+const STYLES = ["hd", "anime", "realistic", "cinematic", "3d", "cyberpunk"];
 
 module.exports = {
-    run: async ({ sock, from, args, reply }) => {
+    name: "imagine",
+    aliases: ["img", "genimage", "draw"],
 
+    run: async function ({ sock, from, args, reply, message }) {
         if (!args.length) {
             return reply(
 `╭━━〔 🎨 VENOM AI IMAGINE 〕━━⬣
 
 Usage:
-.imagine <prompt>
+#imagine <prompt>
 
 Modes:
-.imagine hd <prompt>
-.imagine anime <prompt>
-.imagine realistic <prompt>
-.imagine cinematic <prompt>
-.imagine 3d <prompt>
-.imagine cyberpunk <prompt>
+#imagine hd <prompt>
+#imagine anime <prompt>
+#imagine realistic <prompt>
+#imagine cinematic <prompt>
+#imagine 3d <prompt>
+#imagine cyberpunk <prompt>
 
 Example:
-.imagine hd Lamborghini in a neon city
+#imagine hd red Lamborghini in neon city
 
 ╰━━━━━━━━━━━━━━━━⬣`
             );
         }
 
-        let hd = false;
         let style = "";
-
-        const styles = {
-            anime: "anime",
-            realistic: "realistic photography",
-            cinematic: "cinematic movie scene",
-            "3d": "3D render",
-            cyberpunk: "cyberpunk futuristic"
-        };
-
-        let promptArgs = [...args];
-if (promptArgs[0]?.toLowerCase() === "history") {
-
-    const history = imageHistory.get(from);
-
-    if (!history.length) {
-        return reply("🎨 No image history found.");
-    }
-
-    let text =
-`╭━━〔 🎨 VENOM AI HISTORY 〕━━⬣
-
-`;
-
-    history.forEach((item, i) => {
-        text += `${i + 1}. ${item.prompt}\n`;
-
-        if (item.style) {
-            text += `🎭 ${item.style}\n`;
+        let promptParts = args.slice();
+        const first = String(args[0] || "").toLowerCase();
+        if (STYLES.indexOf(first) !== -1) {
+            style = first;
+            promptParts = args.slice(1);
         }
 
-        if (item.hd) {
-            text += "⚡ HD\n";
-        }
-
-        text += "\n";
-    });
-
-    text +=
-`╰━━━━━━━━━━━━━━━━⬣`;
-
-    return reply(text);
-}
-
-        if (promptArgs[0].toLowerCase() === "hd") {
-            hd = true;
-            promptArgs.shift();
-        }
-
-        if (styles[promptArgs[0]?.toLowerCase()]) {
-            style = styles[promptArgs[0].toLowerCase()];
-            promptArgs.shift();
-        }
-
-        const prompt = promptArgs.join(" ").trim();
-
+        const prompt = promptParts.join(" ").trim();
         if (!prompt) {
-            return reply("❌ Please enter an image prompt.");
-        }
-        const cooldown = imageQueue.isCooldown(from);
-
-if (cooldown) {
-    return reply(
-`⏳ Please wait ${Math.ceil(cooldown / 1000)} seconds before creating another image.`
-    );
-}
-
-        if (imageQueue.has(from)) {
-            return reply(
-                "⏳ You already have an image generating. Please wait."
-            );
+            return reply("❌ Add a prompt after the mode.\nExample: #imagine hd a cat");
         }
 
         try {
-
-            imageQueue.add(from);
-	    imageQueue.setCooldown(from);
-
             await reply(
-`🎨 VENOM AI IMAGE
-
-📝 Prompt:
-${prompt}
-
-${style ? "🎭 Style: " + style : ""}
-${hd ? "⚡ HD Mode: ON" : ""}
-
-⏳ Generating...`
+                "🎨 VENOM AI IMAGE\n\n📝 Prompt:\n" +
+                    prompt +
+                    (style ? "\n🎭 Style: " + style : "") +
+                    "\n\n⏳ Generating..."
             );
 
-            const image = await generateImage(prompt, {
-                style,
-                hd
-            });
+            const buffer = await generateImage(prompt, { style: style });
 
-            await sock.sendMessage(from, {
-                image,
-                caption:
-`╭━━〔 🎨 VENOM AI 〕━━⬣
-
-📝 ${prompt}
-
-${style ? "🎭 " + style : ""}
-${hd ? "⚡ HD Generated" : "✨ Generated"}
-
-⚡ Powered by VENOM X
-
-╰━━━━━━━━━━━━━━━━⬣`
-            });
-imageHistory.add(from, {
-    prompt,
-    style,
-    hd,
-    time: new Date().toISOString()
-});
-
+            await sock.sendMessage(
+                from,
+                {
+                    image: buffer,
+                    caption:
+                        "╭━━〔 🎨 VENOM AI 〕━━⬣\n\n" +
+                        "📝 " +
+                        prompt +
+                        "\n\n✨ Generated\n⚡ Powered by VENOM X\n\n" +
+                        "╰━━━━━━━━━━━━━━━━⬣"
+                },
+                { quoted: message }
+            );
         } catch (err) {
-
             console.log("IMAGINE ERROR:", err.message);
-
-            await reply(
-`❌ VENOM AI failed:
-
-${err.message}`
-            );
-
-        } finally {
-
-            imageQueue.remove(from);
-
+            return reply("❌ Imagine failed:\n" + err.message);
         }
-
     }
 };
