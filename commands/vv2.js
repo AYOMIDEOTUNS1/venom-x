@@ -1,158 +1,170 @@
 const {
-    downloadContentFromMessage
+    downloadContentFromMessage,
+    downloadMediaMessage
 } = require("@whiskeysockets/baileys");
-
-const settings = require("../settings.json");
+const pino = require("pino");
+const { getSettings } = require("../lib/settingsCache");
 
 function getContextInfo(message) {
+    const m = message && message.message ? message.message : {};
     return (
-        message?.message?.extendedTextMessage?.contextInfo ||
-        message?.message?.imageMessage?.contextInfo ||
-        message?.message?.videoMessage?.contextInfo ||
-        message?.message?.audioMessage?.contextInfo ||
-        message?.message?.documentMessage?.contextInfo ||
-        message?.message?.stickerMessage?.contextInfo ||
+        (m.extendedTextMessage && m.extendedTextMessage.contextInfo) ||
+        (m.imageMessage && m.imageMessage.contextInfo) ||
+        (m.videoMessage && m.videoMessage.contextInfo) ||
+        (m.audioMessage && m.audioMessage.contextInfo) ||
+        (m.documentMessage && m.documentMessage.contextInfo) ||
+        (m.stickerMessage && m.stickerMessage.contextInfo) ||
         {}
     );
 }
 
 function getQuotedMessage(message) {
-    return getContextInfo(message)?.quotedMessage || null;
+    return getContextInfo(message).quotedMessage || null;
 }
 
 function unwrapMessage(message) {
     let current = message;
-
-    for (let i = 0; i < 6 && current; i++) {
-        if (current.ephemeralMessage?.message) {
+    for (let i = 0; i < 8 && current; i++) {
+        if (current.ephemeralMessage && current.ephemeralMessage.message) {
             current = current.ephemeralMessage.message;
             continue;
         }
-        if (current.viewOnceMessage?.message) {
+        if (current.viewOnceMessage && current.viewOnceMessage.message) {
             current = current.viewOnceMessage.message;
             continue;
         }
-        if (current.viewOnceMessageV2?.message) {
+        if (current.viewOnceMessageV2 && current.viewOnceMessageV2.message) {
             current = current.viewOnceMessageV2.message;
             continue;
         }
-        if (current.viewOnceMessageV2Extension?.message) {
+        if (current.viewOnceMessageV2Extension && current.viewOnceMessageV2Extension.message) {
             current = current.viewOnceMessageV2Extension.message;
             continue;
         }
         break;
     }
-
     return current || null;
 }
 
-async function downloadMedia(mediaMessage, type) {
-    if (!mediaMessage) throw new Error("Media message is missing.");
+async function downloadMedia(mediaMessage, type, sock, message, contextInfo) {
+    try {
+        const stream = await downloadContentFromMessage(mediaMessage, type);
+        const chunks = [];
+        for await (const chunk of stream) chunks.push(chunk);
+        if (chunks.length) return Buffer.concat(chunks);
+    } catch (e) {}
 
-    const stream = await downloadContentFromMessage(mediaMessage, type);
-    const chunks = [];
+    try {
+        const buf = await downloadMediaMessage(
+            {
+                key: {
+                    remoteJid: message.key.remoteJid,
+                    id: contextInfo.stanzaId,
+                    participant: contextInfo.participant
+                },
+                message: { [type + "Message"]: mediaMessage }
+            },
+            "buffer",
+            {},
+            {
+                logger: pino({ level: "silent" }),
+                reuploadRequest: sock.updateMediaMessage
+            }
+        );
+        if (buf && buf.length) return Buffer.from(buf);
+    } catch (e) {}
 
-    for await (const chunk of stream) {
-        chunks.push(chunk);
-    }
-
-    if (!chunks.length) throw new Error("No media data received.");
-    return Buffer.concat(chunks);
+    throw new Error("Could not download media (expired or already opened).");
 }
 
 async function react(sock, message, emoji) {
     try {
         await sock.sendMessage(message.key.remoteJid, {
-            react: {
-                text: emoji,
-                key: message.key
-            }
+            react: { text: emoji, key: message.key }
         });
     } catch (e) {}
+}
+
+function ownerJid(sock) {
+    const settings = getSettings();
+    const num = String(settings.ownerNumber || "").replace(/\D/g, "");
+    if (num) return num + "@s.whatsapp.net";
+    try {
+        if (sock.user && sock.user.id) {
+            return sock.user.id.split(":")[0] + "@s.whatsapp.net";
+        }
+    } catch (e) {}
+    return null;
 }
 
 module.exports = {
     name: "vv2",
     aliases: ["vvpm", "viewpm"],
 
-    run: async function ({ sock, message, reply }) {
+    run: async function ({ sock, message }) {
         try {
+            const contextInfo = getContextInfo(message);
             const quoted = getQuotedMessage(message);
-
             if (!quoted) {
-                return reply(
-"╭━━〔 👁️ VENOM X VIEW ONCE PM 〕━━⬣\n" +
-"┃\n" +
-"┃ Reply to a View Once message\n" +
-"┃ and type:\n" +
-"┃\n" +
-"┃ #vv2\n" +
-"┃\n" +
-"┃ Media goes to your private chat.\n" +
-"┃ Success = react only (no text).\n" +
-"┃\n" +
-"╰━━━━━━━━━━━━━━━━⬣"
-                );
+                await react(sock, message, "❓");
+                return;
             }
 
             const content = unwrapMessage(quoted);
-
             if (!content) {
                 await react(sock, message, "❌");
                 return;
             }
 
-            const ownerJid = String(settings.ownerNumber || "").includes("@")
-                ? settings.ownerNumber
-                : String(settings.ownerNumber) + "@s.whatsapp.net";
+            const to = ownerJid(sock);
+            if (!to) {
+                await react(sock, message, "❌");
+                return;
+            }
 
-            // IMAGE
             if (content.imageMessage) {
-                const buffer = await downloadMedia(content.imageMessage, "image");
-                await sock.sendMessage(ownerJid, {
-                    image: buffer,
-                    caption: "👁️ View Once unlocked"
-                });
+                const buffer = await downloadMedia(
+                    content.imageMessage, "image", sock, message, contextInfo
+                );
+                await sock.sendMessage(to, { image: buffer, caption: "👁️ VV2" });
                 await react(sock, message, "✅");
                 return;
             }
 
-            // VIDEO
             if (content.videoMessage) {
-                const buffer = await downloadMedia(content.videoMessage, "video");
-                await sock.sendMessage(ownerJid, {
-                    video: buffer,
-                    caption: "👁️ View Once unlocked"
-                });
+                const buffer = await downloadMedia(
+                    content.videoMessage, "video", sock, message, contextInfo
+                );
+                await sock.sendMessage(to, { video: buffer, caption: "👁️ VV2" });
                 await react(sock, message, "✅");
                 return;
             }
 
-            // AUDIO
             if (content.audioMessage) {
-                const buffer = await downloadMedia(content.audioMessage, "audio");
-                await sock.sendMessage(ownerJid, {
+                const buffer = await downloadMedia(
+                    content.audioMessage, "audio", sock, message, contextInfo
+                );
+                await sock.sendMessage(to, {
                     audio: buffer,
-                    mimetype: content.audioMessage.mimetype || "audio/mpeg",
-                    ptt: content.audioMessage.ptt || false
+                    mimetype: content.audioMessage.mimetype || "audio/ogg; codecs=opus",
+                    ptt: !!content.audioMessage.ptt
                 });
                 await react(sock, message, "✅");
                 return;
             }
 
-            // STICKER
             if (content.stickerMessage) {
-                const buffer = await downloadMedia(content.stickerMessage, "sticker");
-                await sock.sendMessage(ownerJid, {
-                    sticker: buffer
-                });
+                const buffer = await downloadMedia(
+                    content.stickerMessage, "sticker", sock, message, contextInfo
+                );
+                await sock.sendMessage(to, { sticker: buffer });
                 await react(sock, message, "✅");
                 return;
             }
 
             await react(sock, message, "❌");
         } catch (error) {
-            console.error("VV2 ERROR:", error);
+            console.log("VV2 ERROR:", error.message);
             await react(sock, message, "❌");
         }
     }

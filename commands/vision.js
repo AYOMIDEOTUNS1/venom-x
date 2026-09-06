@@ -1,51 +1,96 @@
 const { downloadMediaMessage } = require("@whiskeysockets/baileys");
-const ai = require("../lib/gemini");
 const pino = require("pino");
+const axios = require("axios");
+const { getSettings } = require("../lib/settingsCache");
+
+async function geminiVision(apiKey, base64, mime, prompt) {
+    const models = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"];
+    let lastErr = null;
+
+    for (let i = 0; i < models.length; i++) {
+        const model = models[i];
+        try {
+            const url =
+                "https://generativelanguage.googleapis.com/v1beta/models/" +
+                model +
+                ":generateContent?key=" +
+                apiKey;
+
+            const res = await axios.post(
+                url,
+                {
+                    contents: [
+                        {
+                            parts: [
+                                { text: prompt },
+                                {
+                                    inline_data: {
+                                        mime_type: mime || "image/jpeg",
+                                        data: base64
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                },
+                { timeout: 60000 }
+            );
+
+            const text =
+                res.data &&
+                res.data.candidates &&
+                res.data.candidates[0] &&
+                res.data.candidates[0].content &&
+                res.data.candidates[0].content.parts &&
+                res.data.candidates[0].content.parts[0] &&
+                res.data.candidates[0].content.parts[0].text;
+
+            if (text) return String(text).trim();
+        } catch (err) {
+            lastErr = err;
+            console.log("VISION model fail:", model, (err.response && err.response.status) || err.message);
+        }
+    }
+    throw lastErr || new Error("Vision failed");
+}
 
 module.exports = {
-    run: async ({ sock, from, message, reply }) => {
+    name: "vision",
+    aliases: ["vison", "see", "describe"],
 
+    run: async function ({ sock, from, message, reply, args }) {
         try {
-
             const context =
-                message.message?.extendedTextMessage?.contextInfo;
+                message.message &&
+                message.message.extendedTextMessage &&
+                message.message.extendedTextMessage.contextInfo;
 
             if (!context || !context.quotedMessage) {
                 return reply(
-`╭━━〔 👁️ VENOM AI VISION 〕━━⬣
-
-❌ Reply to an image.
-
-Example:
-
-.vision
-
-╰━━━━━━━━━━━━━━━━⬣`
+"╭━━〔 👁️ VENOM AI VISION 〕━━⬣\n\nReply to an image:\n#vision\n#vision what is this?\n\n╰━━━━━━━━━━━━━━━━⬣"
                 );
             }
 
             const quoted = context.quotedMessage;
-
             if (!quoted.imageMessage) {
-                return reply(
-`╭━━〔 👁️ VENOM AI VISION 〕━━⬣
-
-❌ Reply to an image only.
-
-╰━━━━━━━━━━━━━━━━⬣`
-                );
+                return reply("❌ Reply to an **image** only.");
             }
 
-            const mime =
-                quoted.imageMessage.mimetype || "image/jpeg";
+            const settings = getSettings();
+            const apiKey = String(
+                process.env.GEMINI_API_KEY || settings.geminiApiKey || ""
+            ).trim();
 
-            await reply(
-`╭━━〔 👁️ VENOM AI 〕━━⬣
+            if (!apiKey) {
+                return reply("❌ No GEMINI_API_KEY on Render Environment.");
+            }
 
-📥 Downloading image...
+            const mime = quoted.imageMessage.mimetype || "image/jpeg";
+            const userPrompt =
+                (args && args.length ? args.join(" ") : "") ||
+                "Describe this image clearly: objects, people, text, colors, scene, summary.";
 
-╰━━━━━━━━━━━━━━━━⬣`
-            );
+            await reply("📥 Reading image...");
 
             const media = await downloadMediaMessage(
                 {
@@ -64,120 +109,31 @@ Example:
                 }
             );
 
-            if (!media) {
-                return reply(
-`╭━━〔 ❌ VENOM AI 〕━━⬣
-
-Unable to download image.
-
-╰━━━━━━━━━━━━━━━━⬣`
-                );
+            if (!media || !media.length) {
+                return reply("❌ Could not download image.");
             }
 
-            await reply(
-`╭━━〔 👁️ VENOM AI 〕━━⬣
+            await reply("🧠 Analyzing...");
 
-🧠 Analyzing image...
-
-╰━━━━━━━━━━━━━━━━⬣`
-            );
-
-            const result = await ai.generateVision(
+            const result = await geminiVision(
+                apiKey,
                 Buffer.from(media).toString("base64"),
-                `You are VENOM X Vision AI.
-
-Analyze this image thoroughly.
-
-Include:
-1. Description
-2. Objects
-3. People
-4. Clothing
-5. Facial expressions
-6. Colors
-7. Environment
-8. OCR text
-9. Interesting observations
-10. Summary
-
-Respond neatly.`,
-                mime
+                mime,
+                "You are VENOM X Vision AI.\n" + userPrompt
             );
-
-            if (!result) {
-                return reply(
-`╭━━〔 ❌ VENOM AI 〕━━⬣
-
-Gemini returned no response.
-
-╰━━━━━━━━━━━━━━━━⬣`
-                );
-            }
-
-            await sock.sendMessage(
-                from,
-                {
-                    text:
-`╭━━〔 👁️ VENOM AI VISION 〕━━⬣
-
-${result}
-
-╰━━━━━━━━━━━━━━━━⬣
-
-🤖 Powered by VENOM X`
-                },
-                {
-                    quoted: message
-                }
-            );
-
-        } catch (err) {
-
-            console.log("VISION ERROR:", err);
-
-            const msg =
-                err?.message || String(err);
-
-            if (
-                msg.includes("429") ||
-                msg.includes("RESOURCE_EXHAUSTED") ||
-                msg.toLowerCase().includes("quota")
-            ) {
-
-                return reply(
-`╭━━〔 ⚠️ VENOM AI 〕━━⬣
-
-Gemini Vision quota has been exhausted.
-
-Please try again later.
-
-╰━━━━━━━━━━━━━━━━⬣`
-                );
-            }
-
-            if (
-                msg.includes("404") ||
-                msg.includes("NOT_FOUND")
-            ) {
-
-                return reply(
-`╭━━〔 ❌ VENOM AI 〕━━⬣
-
-The selected Gemini Vision model is unavailable.
-
-╰━━━━━━━━━━━━━━━━⬣`
-                );
-            }
 
             return reply(
-`╭━━〔 ❌ VENOM AI ERROR 〕━━⬣
-
-${msg}
-
-╰━━━━━━━━━━━━━━━━⬣`
+                "╭━━〔 👁️ VENOM AI VISION 〕━━⬣\n\n" +
+                    result +
+                    "\n\n╰━━━━━━━━━━━━━━━━⬣"
             );
-
+        } catch (err) {
+            console.log("VISION ERROR:", err.message);
+            const msg = err.message || String(err);
+            if (/429|quota|RESOURCE_EXHAUSTED/i.test(msg)) {
+                return reply("⚠️ Gemini quota exhausted. Try later.");
+            }
+            return reply("❌ Vision error:\n" + msg);
         }
-
     }
 };
