@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const https = require("https");
 const { execFile } = require("child_process");
 const { promisify } = require("util");
 
@@ -10,12 +11,60 @@ function isUrl(text) {
     return /^https?:\/\//i.test(String(text || "").trim());
 }
 
-async function hasYtDlp() {
+function downloadFile(url, dest) {
+    return new Promise(function (resolve, reject) {
+        const file = fs.createWriteStream(dest);
+        https
+            .get(url, function (res) {
+                if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                    file.close();
+                    fs.unlink(dest, function () {});
+                    return downloadFile(res.headers.location, dest).then(resolve).catch(reject);
+                }
+                if (res.statusCode !== 200) {
+                    reject(new Error("HTTP " + res.statusCode));
+                    return;
+                }
+                res.pipe(file);
+                file.on("finish", function () {
+                    file.close(resolve);
+                });
+            })
+            .on("error", function (err) {
+                try {
+                    fs.unlinkSync(dest);
+                } catch (e) {}
+                reject(err);
+            });
+    });
+}
+
+async function resolveYtDlp() {
+    const candidates = ["yt-dlp", "yt-dlp_linux", path.join(os.tmpdir(), "venom-yt-dlp")];
+
+    for (let i = 0; i < candidates.length; i++) {
+        const bin = candidates[i];
+        try {
+            await execFileAsync(bin, ["--version"], { timeout: 15000 });
+            return bin;
+        } catch (e) {}
+    }
+
+    // download standalone binary once
+    const dest = path.join(os.tmpdir(), "venom-yt-dlp");
+    const url =
+        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp";
     try {
-        await execFileAsync("yt-dlp", ["--version"], { timeout: 10000 });
-        return true;
+        if (!fs.existsSync(dest) || fs.statSync(dest).size < 10000) {
+            await downloadFile(url, dest);
+            fs.chmodSync(dest, 0o755);
+        }
+        await execFileAsync(dest, ["--version"], { timeout: 15000 });
+        return dest;
     } catch (e) {
-        return false;
+        throw new Error(
+            "yt-dlp missing and auto-install failed: " + (e.message || e)
+        );
     }
 }
 
@@ -46,30 +95,21 @@ Example:
             return reply("❌ Send a valid Facebook URL.");
         }
 
-        if (!(await hasYtDlp())) {
-            return reply(
-`❌ yt-dlp is not installed on this server.
-
-Render build must install yt-dlp.
-Termux: pkg install yt-dlp`
-            );
-        }
-
         const tempDir = await fs.promises.mkdtemp(
             path.join(os.tmpdir(), "venom-fb-")
         );
         const output = path.join(tempDir, "facebook.%(ext)s");
 
         try {
-            await sock.sendMessage(from, {
-                react: { text: "🔎", key: message.key }
-            }).catch(function () {});
+            await reply("📘 Facebook: preparing...\n⏳ Please wait.");
 
-            await reply("📘 Facebook: downloading...\n⏳ Please wait.");
+            const ytdlp = await resolveYtDlp();
+
+            await reply("⬇️ Downloading video...");
 
             try {
                 await execFileAsync(
-                    "yt-dlp",
+                    ytdlp,
                     [
                         "--no-playlist",
                         "--no-warnings",
@@ -84,73 +124,44 @@ Termux: pkg install yt-dlp`
                         output,
                         url
                     ],
-                    {
-                        timeout: 180000,
-                        maxBuffer: 20 * 1024 * 1024
-                    }
+                    { timeout: 180000, maxBuffer: 20 * 1024 * 1024 }
                 );
             } catch (err) {
                 const detail =
-                    (err && err.stderr && String(err.stderr).slice(0, 300)) ||
+                    (err && err.stderr && String(err.stderr).slice(0, 350)) ||
                     (err && err.message) ||
-                    "yt-dlp failed";
+                    "download failed";
                 throw new Error(detail);
             }
 
             const files = await fs.promises.readdir(tempDir);
-            const videoFile = files.find(function (file) {
-                return /\.(mp4|mkv|webm|mov)$/i.test(file);
+            const videoFile = files.find(function (f) {
+                return /\.(mp4|mkv|webm|mov)$/i.test(f);
             });
+            if (!videoFile) throw new Error("Video file was not created.");
 
-            if (!videoFile) {
-                throw new Error("Video file was not created.");
-            }
+            const buffer = await fs.promises.readFile(path.join(tempDir, videoFile));
+            if (buffer.length < 1000) throw new Error("Downloaded file is empty.");
 
-            const filePath = path.join(tempDir, videoFile);
-            const buffer = await fs.promises.readFile(filePath);
-
-            if (buffer.length < 1000) {
-                throw new Error("Downloaded file is empty.");
-            }
-
-            // WhatsApp prefers buffer on some hosts
             await sock.sendMessage(
                 from,
                 {
                     video: buffer,
                     mimetype: "video/mp4",
-                    caption:
-                        "╭━━〔 📘 VENOM X FACEBOOK 〕━━⬣\n" +
-                        "┃\n" +
-                        "┃ ✅ Download complete\n" +
-                        "┃\n" +
-                        "╰━━━━━━━━━━━━━━━━⬣"
+                    caption: "✅ Facebook video\n⚡ VENOM X"
                 },
                 { quoted: message }
             );
-
-            await sock.sendMessage(from, {
-                react: { text: "✅", key: message.key }
-            }).catch(function () {});
         } catch (error) {
             console.log("FACEBOOK DOWNLOAD ERROR:", error.message);
-
-            await sock.sendMessage(from, {
-                react: { text: "❌", key: message.key }
-            }).catch(function () {});
-
             return reply(
 `╭━━〔 ❌ VENOM X FACEBOOK 〕━━⬣
 
-Download failed.
-
-${String(error.message || "").slice(0, 400)}
+${String(error.message || "").slice(0, 500)}
 
 Tips:
-• Use public Reel / video link
-• fb.watch or facebook.com/reel/...
-• Private videos need login (not supported)
-• Server must have yt-dlp
+• Public Reel / fb.watch link only
+• Private videos not supported
 
 ╰━━━━━━━━━━━━━━━━⬣`
             );
