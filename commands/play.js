@@ -7,6 +7,7 @@ const { execFile } = require("child_process");
 const { promisify } = require("util");
 
 const execFileAsync = promisify(execFile);
+const { runYtDlp, getYtDlp } = require("../lib/ytdlp");
 
 function tmpFile(ext) {
     return path.join(

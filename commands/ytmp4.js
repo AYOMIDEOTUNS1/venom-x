@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
 const yt = require("../lib/youtube");
+const { runYtDlp, getYtDlp } = require("../lib/ytdlp");
 
 module.exports = {
     name: "ytmp4",
@@ -59,7 +60,7 @@ module.exports = {
 ╰━━━━━━━━━━━━━━━━⬣`
 );
 
-            const proc = spawn("yt-dlp",[
+            const proc = null /* use runYtDlp */,[
                 "-f",
                 "best[ext=mp4]",
                 "-o",

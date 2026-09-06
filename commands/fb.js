@@ -6,6 +6,7 @@ const { execFile } = require("child_process");
 const { promisify } = require("util");
 
 const execFileAsync = promisify(execFile);
+const { runYtDlp, getYtDlp } = require("../lib/ytdlp");
 
 function isUrl(text) {
     return /^https?:\/\//i.test(String(text || "").trim());
