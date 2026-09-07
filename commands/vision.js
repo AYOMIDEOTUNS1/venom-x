@@ -1,7 +1,61 @@
-const { downloadMediaMessage } = require("@whiskeysockets/baileys");
+const { downloadMediaMessage, downloadContentFromMessage } = require("@whiskeysockets/baileys");
 const pino = require("pino");
 const axios = require("axios");
 const { getSettings } = require("../lib/settingsCache");
+
+function getQuotedImage(message) {
+    const ctx =
+        message.message &&
+        message.message.extendedTextMessage &&
+        message.message.extendedTextMessage.contextInfo;
+
+    if (!ctx || !ctx.quotedMessage) return null;
+
+    let q = ctx.quotedMessage;
+    if (q.ephemeralMessage && q.ephemeralMessage.message) q = q.ephemeralMessage.message;
+    if (q.viewOnceMessage && q.viewOnceMessage.message) q = q.viewOnceMessage.message;
+    if (q.viewOnceMessageV2 && q.viewOnceMessageV2.message) q = q.viewOnceMessageV2.message;
+
+    if (!q.imageMessage) return null;
+    return { imageMessage: q.imageMessage, contextInfo: ctx };
+}
+
+async function downloadImage(sock, from, quoted) {
+    const { imageMessage, contextInfo } = quoted;
+
+    try {
+        const stream = await downloadContentFromMessage(imageMessage, "image");
+        const chunks = [];
+        for await (const c of stream) chunks.push(c);
+        if (chunks.length) return Buffer.concat(chunks);
+    } catch (e) {
+        console.log("VISION stream:", e.message);
+    }
+
+    try {
+        const buf = await downloadMediaMessage(
+            {
+                key: {
+                    remoteJid: from,
+                    id: contextInfo.stanzaId,
+                    participant: contextInfo.participant
+                },
+                message: { imageMessage: imageMessage }
+            },
+            "buffer",
+            {},
+            {
+                logger: pino({ level: "silent" }),
+                reuploadRequest: sock.updateMediaMessage
+            }
+        );
+        if (buf && buf.length) return Buffer.from(buf);
+    } catch (e) {
+        console.log("VISION mediaMessage:", e.message);
+    }
+
+    throw new Error("Could not download image");
+}
 
 async function geminiVision(apiKey, base64, mime, prompt) {
     const models = [
@@ -55,17 +109,16 @@ async function geminiVision(apiKey, base64, mime, prompt) {
                     })
                     .join("\n")
                     .trim();
-                if (text) return text;
+                if (text) return { text: text, model: model };
             }
-            lastErr = new Error("Empty vision response from " + model);
+            lastErr = new Error("Empty response from " + model);
         } catch (err) {
-            const status = err.response && err.response.status;
             const data = err.response && err.response.data;
             const msg =
                 (data && data.error && data.error.message) ||
                 err.message ||
                 String(err);
-            console.log("VISION fail:", model, status, msg);
+            console.log("VISION fail:", model, err.response && err.response.status, msg);
             lastErr = new Error(msg);
         }
     }
@@ -78,32 +131,30 @@ module.exports = {
 
     run: async function ({ sock, from, message, reply, args }) {
         try {
-            const context =
-                message.message &&
-                message.message.extendedTextMessage &&
-                message.message.extendedTextMessage.contextInfo;
-
-            if (!context || !context.quotedMessage) {
+            const quoted = getQuotedImage(message);
+            if (!quoted) {
                 return reply(
-"╭━━〔 👁️ VENOM AI VISION 〕━━⬣\n\n" +
-"Reply to an image:\n#vision\n#vision what is in this photo?\n\n" +
-"╰━━━━━━━━━━━━━━━━⬣"
+`╭━━〔 👁️ VENOM AI VISION 〕━━⬣
+
+Reply to an image:
+#vision
+#vision what is this?
+
+╰━━━━━━━━━━━━━━━━⬣`
                 );
             }
 
-            const quoted = context.quotedMessage;
-            if (!quoted.imageMessage) {
-                return reply("❌ Reply to an **image** only.");
-            }
-
             const settings = getSettings();
-            const apiKey = String(
+            let apiKey = String(
                 process.env.GEMINI_API_KEY || settings.geminiApiKey || ""
             ).trim();
 
+            // if someone pasted "#AIza..." by mistake
+            if (apiKey.charAt(0) === "#") apiKey = apiKey.slice(1).trim();
+
             if (!apiKey) {
                 return reply(
-                    "❌ No Gemini key.\nAdd GEMINI_API_KEY in Render Environment."
+                    "❌ No Gemini key.\nSet GEMINI_API_KEY on Render Environment."
                 );
             }
 
@@ -112,47 +163,24 @@ module.exports = {
                 (args && args.length ? args.join(" ").trim() : "") ||
                 "Describe this image in detail: scene, objects, people, text, colors, summary.";
 
-            await reply("📥 Downloading image...");
+            await reply("📥 Reading image...");
+            const media = await downloadImage(sock, from, quoted);
 
-            let media;
-            try {
-                media = await downloadMediaMessage(
-                    {
-                        key: {
-                            remoteJid: from,
-                            id: context.stanzaId,
-                            participant: context.participant
-                        },
-                        message: quoted
-                    },
-                    "buffer",
-                    {},
-                    {
-                        logger: pino({ level: "silent" }),
-                        reuploadRequest: sock.updateMediaMessage
-                    }
-                );
-            } catch (e) {
-                return reply("❌ Image download failed:\n" + e.message);
-            }
-
-            if (!media || !media.length) {
-                return reply("❌ Empty image data.");
-            }
-
-            await reply("🧠 Analyzing with Gemini...");
-
+            await reply("🧠 Analyzing...");
             const result = await geminiVision(
                 apiKey,
-                Buffer.from(media).toString("base64"),
+                media.toString("base64"),
                 mime,
                 "You are VENOM X Vision AI.\n" + userPrompt
             );
 
             return reply(
-                "╭━━〔 👁️ VENOM AI VISION 〕━━⬣\n\n" +
-                    result +
-                    "\n\n╰━━━━━━━━━━━━━━━━⬣"
+`╭━━〔 👁️ VENOM AI VISION 〕━━⬣
+
+${result.text}
+
+⚡ ${result.model}
+╰━━━━━━━━━━━━━━━━⬣`
             );
         } catch (err) {
             console.log("VISION ERROR:", err.message);
@@ -160,8 +188,8 @@ module.exports = {
             if (/429|quota|RESOURCE_EXHAUSTED/i.test(msg)) {
                 return reply("⚠️ Gemini quota exhausted. Try later.");
             }
-            if (/API_KEY|invalid|403/i.test(msg)) {
-                return reply("❌ Invalid GEMINI_API_KEY on Render.");
+            if (/API_KEY|invalid|403|400/i.test(msg)) {
+                return reply("❌ Gemini key invalid or blocked.\nCheck GEMINI_API_KEY on Render.");
             }
             return reply("❌ Vision error:\n" + msg.slice(0, 400));
         }
