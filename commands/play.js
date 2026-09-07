@@ -37,6 +37,7 @@ async function downloadAudioFast(videoUrl, outPath) {
             "--audio-quality", "5",
             "--no-playlist",
             "--no-warnings",
+                    "--extractor-args", "youtube:player_client=android,web",
             "--newline",
             "-o", outPath.replace(/\.mp3$/i, ".%(ext)s"),
             videoUrl

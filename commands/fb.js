@@ -114,6 +114,7 @@ Example:
                     [
                         "--no-playlist",
                         "--no-warnings",
+                    "--extractor-args", "youtube:player_client=android,web,tv",
                         "--restrict-filenames",
                         "--user-agent",
                         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36",
