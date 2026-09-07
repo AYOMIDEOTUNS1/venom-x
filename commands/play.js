@@ -2,7 +2,13 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const axios = require("axios");
-const { runYtDlp } = require("../lib/ytdlp");
+
+const PIPED_APIS = [
+    "https://pipedapi.kavin.rocks",
+    "https://pipedapi.in.projectsegfau.lt",
+    "https://api.piped.private.coffee",
+    "https://pipedapi.adminforge.de"
+];
 
 function isUrl(t) {
     return /^https?:\/\//i.test(String(t || "").trim());
@@ -15,106 +21,106 @@ function formatDuration(sec) {
     return m + ":" + String(s).padStart(2, "0");
 }
 
-async function searchYoutube(query) {
-    const clients = ["android", "ios", "mweb"];
-    let lastErr = null;
-    for (let i = 0; i < clients.length; i++) {
-        try {
-            const { stdout } = await runYtDlp([
-                "ytsearch1:" + query,
-                "--dump-json",
-                "--no-warnings",
-                "--no-playlist",
-                "--extractor-args",
-                "youtube:player_client=" + clients[i]
-            ]);
-            const line = String(stdout || "").trim().split("\n").filter(Boolean)[0];
-            if (!line) throw new Error("No search results");
-            const data = JSON.parse(line);
-            return {
-                title: data.title || "Unknown",
-                url: data.webpage_url || ("https://www.youtube.com/watch?v=" + data.id),
-                duration: data.duration,
-                uploader: data.uploader || data.channel || "Unknown",
-                thumbnail: data.thumbnail || null
-            };
-        } catch (e) {
-            lastErr = e;
-        }
-    }
-    throw lastErr || new Error("Search failed");
+function extractVideoId(input) {
+    const s = String(input || "");
+    let m = s.match(/[?&]v=([a-zA-Z0-9_-]{6,})/);
+    if (m) return m[1];
+    m = s.match(/youtu\.be\/([a-zA-Z0-9_-]{6,})/);
+    if (m) return m[1];
+    m = s.match(/youtube\.com\/shorts\/([a-zA-Z0-9_-]{6,})/);
+    if (m) return m[1];
+    if (/^[a-zA-Z0-9_-]{11}$/.test(s)) return s;
+    return null;
 }
 
-async function downloadWithYtDlp(url, outTemplate) {
-    const clients = ["android", "ios", "mweb", "tv_embedded"];
+async function pipedGet(pathname) {
     let lastErr = null;
-    for (let i = 0; i < clients.length; i++) {
+    for (let i = 0; i < PIPED_APIS.length; i++) {
+        const base = PIPED_APIS[i];
         try {
-            await runYtDlp([
-                "--no-playlist",
-                "--no-warnings",
-                "--extractor-args",
-                "youtube:player_client=" + clients[i],
-                "-f",
-                "bestaudio[ext=m4a]/bestaudio/best",
-                "-x",
-                "--audio-format",
-                "mp3",
-                "--audio-quality",
-                "128K",
-                "-o",
-                outTemplate,
-                url
-            ]);
-            return;
-        } catch (e) {
-            lastErr = e;
-            console.log("play client fail:", clients[i], e.message);
-        }
-    }
-    throw lastErr || new Error("All yt-dlp clients failed");
-}
-
-async function downloadWithCobalt(url, destFile) {
-    // Public Cobalt-style fallback (may change / rate-limit)
-    const endpoints = [
-        "https://api.cobalt.tools/api/json",
-        "https://cobalt-backend.vercel.app/api/json"
-    ];
-    let lastErr = null;
-    for (let i = 0; i < endpoints.length; i++) {
-        try {
-            const res = await axios.post(
-                endpoints[i],
-                {
-                    url: url,
-                    isAudioOnly: true,
-                    aFormat: "mp3",
-                    filenamePattern: "basic"
-                },
-                {
-                    timeout: 60000,
-                    headers: {
-                        Accept: "application/json",
-                        "Content-Type": "application/json"
-                    }
-                }
-            );
-            const data = res.data || {};
-            const audioUrl = data.url || data.audio || (data.data && data.data.url);
-            if (!audioUrl) throw new Error("Cobalt returned no url");
-            const audio = await axios.get(audioUrl, {
-                responseType: "arraybuffer",
-                timeout: 120000
+            const res = await axios.get(base + pathname, {
+                timeout: 25000,
+                headers: { "User-Agent": "VENOM-X" }
             });
-            fs.writeFileSync(destFile, Buffer.from(audio.data));
-            return;
+            if (res.data) return res.data;
         } catch (e) {
             lastErr = e;
-            console.log("cobalt fail:", e.message);
         }
     }
-    throw lastErr || new Error("Cobalt failed");
+    throw lastErr || new Error("All Piped APIs failed");
+}
+
+async function searchPiped(query) {
+    const data = await pipedGet(
+        "/search?q=" + encodeURIComponent(query) + "&filter=videos"
+    );
+    const items = data.items || data || [];
+    const list = Array.isArray(items) ? items : [];
+    const video = list.find(function (x) {
+        return x && (x.url || x.id) && (x.title || x.name);
+    });
+    if (!video) throw new Error("No results found.");
+
+    let id = video.id;
+    if (!id && video.url) {
+        id = extractVideoId(video.url) || String(video.url).replace("/watch?v=", "");
+    }
+    if (!id) throw new Error("No video id in search result.");
+
+    return {
+        id: id,
+        title: video.title || video.name || "Unknown",
+        uploader: (video.uploader && video.uploader.name) || video.uploaderName || "Unknown",
+        duration: video.duration || 0,
+        thumbnail:
+            video.thumbnail ||
+            (video.thumbnails && video.thumbnails[0] && video.thumbnails[0].url) ||
+            null,
+        url: "https://www.youtube.com/watch?v=" + id
+    };
+}
+
+async function getAudioFromPiped(videoId) {
+    const data = await pipedGet("/streams/" + encodeURIComponent(videoId));
+    const audioStreams = data.audioStreams || data.audio || [];
+    if (!audioStreams.length) {
+        throw new Error("No audio streams from Piped.");
+    }
+
+    // prefer m4a / mp4 audio, highest bitrate
+    const sorted = audioStreams.slice().sort(function (a, b) {
+        return (b.bitrate || 0) - (a.bitrate || 0);
+    });
+
+    const preferred =
+        sorted.find(function (s) {
+            return /m4a|mp4|audio\/mp4/i.test(String(s.mimeType || s.format || ""));
+        }) || sorted[0];
+
+    if (!preferred || !preferred.url) {
+        throw new Error("No usable audio URL.");
+    }
+
+    return {
+        url: preferred.url,
+        mime: preferred.mimeType || "audio/mp4",
+        title: data.title || "audio",
+        uploader: (data.uploader && data.uploader) || data.uploaderName || "Unknown",
+        duration: data.duration || 0,
+        thumbnail: data.thumbnailUrl || null
+    };
+}
+
+async function downloadBuffer(url) {
+    const res = await axios.get(url, {
+        responseType: "arraybuffer",
+        timeout: 120000,
+        maxContentLength: 50 * 1024 * 1024,
+        headers: { "User-Agent": "VENOM-X" }
+    });
+    const buf = Buffer.from(res.data);
+    if (buf.length < 1000) throw new Error("Downloaded audio is empty.");
+    return buf;
 }
 
 module.exports = {
@@ -130,40 +136,44 @@ Usage:
 #play <song name>
 #play <youtube url>
 
+Example:
+#play joy is coming by fido
+
 ╰━━━━━━━━━━━━━━━━⬣`
             );
         }
 
         const input = args.join(" ").trim();
-        const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "venom-play-"));
 
         try {
             await reply("🔍 Searching: *" + input + "*");
 
-            let info;
-            if (isUrl(input)) {
-                info = {
-                    title: "YouTube Audio",
-                    url: input,
-                    duration: 0,
-                    uploader: "YouTube",
-                    thumbnail: null
-                };
-            } else {
-                info = await searchYoutube(input);
+            let videoId = extractVideoId(input);
+            let meta = null;
+
+            if (!videoId) {
+                meta = await searchPiped(input);
+                videoId = meta.id;
             }
+
+            const audioMeta = await getAudioFromPiped(videoId);
+            const title = (meta && meta.title) || audioMeta.title || "Unknown";
+            const uploader = (meta && meta.uploader) || audioMeta.uploader || "Unknown";
+            const duration = (meta && meta.duration) || audioMeta.duration || 0;
+            const thumb =
+                (meta && meta.thumbnail) || audioMeta.thumbnail || null;
 
             const caption =
                 "╭━━〔 🎵 VENOM X PLAY 〕━━⬣\n" +
-                "┃ 🎧 " + info.title + "\n" +
-                "┃ 👤 " + info.uploader + "\n" +
-                "┃ ⏱️ " + formatDuration(info.duration) + "\n" +
+                "┃ 🎧 " + title + "\n" +
+                "┃ 👤 " + uploader + "\n" +
+                "┃ ⏱️ " + formatDuration(duration) + "\n" +
                 "┃ ⬇️ Downloading...\n" +
                 "╰━━━━━━━━━━━━━━━━⬣";
 
-            if (info.thumbnail) {
+            if (thumb) {
                 try {
-                    const img = await axios.get(info.thumbnail, {
+                    const img = await axios.get(thumb, {
                         responseType: "arraybuffer",
                         timeout: 15000
                     });
@@ -179,34 +189,18 @@ Usage:
                 await reply(caption);
             }
 
-            const out = path.join(tempDir, "audio.%(ext)s");
-            const cobaltFile = path.join(tempDir, "audio.mp3");
-            let filePath = null;
+            const buffer = await downloadBuffer(audioMeta.url);
 
-            try {
-                await downloadWithYtDlp(info.url, out);
-                const files = await fs.promises.readdir(tempDir);
-                const audio = files.find(function (f) {
-                    return /\.(mp3|m4a|opus|ogg|webm)$/i.test(f);
-                });
-                if (!audio) throw new Error("No audio file");
-                filePath = path.join(tempDir, audio);
-            } catch (e1) {
-                console.log("yt-dlp blocked, trying cobalt:", e1.message);
-                await reply("⚠️ YouTube blocked server IP. Trying alternate...");
-                await downloadWithCobalt(info.url, cobaltFile);
-                filePath = cobaltFile;
-            }
-
-            const buffer = await fs.promises.readFile(filePath);
-            if (buffer.length < 1000) throw new Error("Audio empty");
+            const mime = /mp4|m4a/i.test(audioMeta.mime)
+                ? "audio/mp4"
+                : "audio/mpeg";
 
             await sock.sendMessage(
                 from,
                 {
                     audio: buffer,
-                    mimetype: "audio/mpeg",
-                    fileName: String(info.title || "song").slice(0, 50) + ".mp3",
+                    mimetype: mime,
+                    fileName: String(title).slice(0, 50) + ".mp3",
                     ptt: false
                 },
                 { quoted: message }
@@ -218,17 +212,12 @@ Usage:
 
 Failed to play song.
 
-${String(err.message || "").slice(0, 400)}
+${String(err.message || "").slice(0, 350)}
 
-YouTube often blocks cloud servers.
-Try again later or use a direct link.
+Try another song name or a direct YouTube link.
 
 ╰━━━━━━━━━━━━━━━━⬣`
             );
-        } finally {
-            try {
-                await fs.promises.rm(tempDir, { recursive: true, force: true });
-            } catch (e) {}
         }
     }
 };
