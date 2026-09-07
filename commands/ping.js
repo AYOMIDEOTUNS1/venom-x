@@ -18,13 +18,20 @@ module.exports = {
     name: "ping",
     aliases: ["p", "speed"],
 
-    run: async function ({ reply }) {
-        const t0 = Date.now();
-        // tiny work so speed isn't always 0
-        await Promise.resolve();
-        const speed = Date.now() - t0;
+    run: async function ({ sock, from, reply, message }) {
+        const start = Date.now();
 
-        return reply(
+        // Real latency: time until WhatsApp accepts the send
+        await sock.sendMessage(from, {
+            text: "⏳ Measuring..."
+        });
+
+        const speed = Date.now() - start;
+
+        return sock.sendMessage(
+            from,
+            {
+                text:
 `╭━━〔 🏓 VENOM X PING 〕━━⬣
 ┃ ⚡ Speed : ${speed} ms
 ┃ 🤖 Status : Online
@@ -33,6 +40,8 @@ module.exports = {
 ┃ 🖥️ Node : ${process.version}
 ┃ ⚙️ OS : ${os.platform()}
 ╰━━━━━━━━━━━━━━━━⬣`
+            },
+            { quoted: message }
         );
     }
 };
