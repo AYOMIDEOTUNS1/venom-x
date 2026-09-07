@@ -82,6 +82,8 @@ module.exports = function (sock) {
         hd: "✨",
         private: "🔒",
         public: "🌍",
+        wordchain: "🔤",
+        wc: "🔤",
         default: "⚙️"
     };
 
@@ -111,6 +113,37 @@ module.exports = function (sock) {
         }
 
         return false;
+    }
+
+    function extractBody(msg) {
+        let content = msg.message;
+        if (!content) return "";
+
+        if (content.ephemeralMessage && content.ephemeralMessage.message) {
+            content = content.ephemeralMessage.message;
+        }
+        if (content.viewOnceMessage && content.viewOnceMessage.message) {
+            content = content.viewOnceMessage.message;
+        }
+        if (content.viewOnceMessageV2 && content.viewOnceMessageV2.message) {
+            content = content.viewOnceMessageV2.message;
+        }
+
+        return String(
+            content.conversation ||
+                (content.extendedTextMessage && content.extendedTextMessage.text) ||
+                (content.imageMessage && content.imageMessage.caption) ||
+                (content.videoMessage && content.videoMessage.caption) ||
+                (content.documentMessage && content.documentMessage.caption) ||
+                (content.buttonsResponseMessage &&
+                    content.buttonsResponseMessage.selectedButtonId) ||
+                (content.listResponseMessage &&
+                    content.listResponseMessage.singleSelectReply &&
+                    content.listResponseMessage.singleSelectReply.selectedRowId) ||
+                (content.templateButtonReplyMessage &&
+                    content.templateButtonReplyMessage.selectedId) ||
+                ""
+        ).trim();
     }
 
     console.log("📡 Registering messages.upsert listener...");
@@ -146,8 +179,10 @@ module.exports = function (sock) {
             if (!messageId) return;
 
             const dedupeKey =
-                String(msg.key.remoteJid) + "|" +
-                String(messageId) + "|" +
+                String(msg.key.remoteJid) +
+                "|" +
+                String(messageId) +
+                "|" +
                 (msg.key.fromMe ? "1" : "0");
 
             if (global.processedMessages.has(dedupeKey)) return;
@@ -168,12 +203,18 @@ module.exports = function (sock) {
             const sender = msg.key.participant || msg.key.remoteJid;
             const isGroup = String(from).indexOf("@g.us") !== -1;
 
-            const isOwner = isOwnerSender(msg, settings, sender, senderPn, participantPn);
+            const isOwner = isOwnerSender(
+                msg,
+                settings,
+                sender,
+                senderPn,
+                participantPn
+            );
 
             const allowSelf = settings.allowSelf !== false;
             if (msg.key.fromMe && !allowSelf && !isOwner) return;
 
-            // Group protections non-blocking
+            // Group protections (non-blocking)
             if (isGroup) {
                 setImmediate(function () {
                     try {
@@ -193,7 +234,7 @@ module.exports = function (sock) {
                 });
             }
 
-            // Sticker collector non-blocking
+            // Sticker collector (non-blocking)
             if (!msg.key.fromMe) {
                 setImmediate(function () {
                     (async function () {
@@ -216,44 +257,45 @@ module.exports = function (sock) {
                             const { downloadContentFromMessage } = require("@whiskeysockets/baileys");
                             const stickerCollector = require("../lib/stickerCollector");
 
-                            const stream = await downloadContentFromMessage(stickerMsg, "sticker");
+                            const stream = await downloadContentFromMessage(
+                                stickerMsg,
+                                "sticker"
+                            );
                             const chunks = [];
                             for await (const chunk of stream) chunks.push(chunk);
-                            const buffer = Buffer.concat(chunks);
-                            stickerCollector.addSticker(from, buffer);
+                            stickerCollector.addSticker(from, Buffer.concat(chunks));
                         } catch (e) {}
                     })();
                 });
             }
 
-            let content = msg.message;
-            if (content.ephemeralMessage && content.ephemeralMessage.message) {
-                content = content.ephemeralMessage.message;
-            }
-            if (content.viewOnceMessage && content.viewOnceMessage.message) {
-                content = content.viewOnceMessage.message;
-            }
-            if (content.viewOnceMessageV2 && content.viewOnceMessageV2.message) {
-                content = content.viewOnceMessageV2.message;
-            }
-
-            let body =
-                content.conversation ||
-                (content.extendedTextMessage && content.extendedTextMessage.text) ||
-                (content.imageMessage && content.imageMessage.caption) ||
-                (content.videoMessage && content.videoMessage.caption) ||
-                (content.documentMessage && content.documentMessage.caption) ||
-                (content.buttonsResponseMessage && content.buttonsResponseMessage.selectedButtonId) ||
-                (content.listResponseMessage &&
-                    content.listResponseMessage.singleSelectReply &&
-                    content.listResponseMessage.singleSelectReply.selectedRowId) ||
-                (content.templateButtonReplyMessage && content.templateButtonReplyMessage.selectedId) ||
-                "";
-
-            body = String(body || "").trim();
+            const body = extractBody(msg);
             if (!body) return;
 
             const prefix = settings.prefix || "#";
+
+            // ── Word Chain: plain words (NO prefix) during active game ──
+            if (isGroup && body.indexOf(prefix) !== 0) {
+                try {
+                    const wc = require("../commands/wordchain");
+                    if (typeof wc.handleWordChainMessage === "function") {
+                        const handled = await wc.handleWordChainMessage(
+                            sock,
+                            msg,
+                            from,
+                            sender,
+                            body,
+                            isGroup
+                        );
+                        if (handled) return;
+                    }
+                } catch (e) {
+                    console.log("WORDCHAIN HOOK:", e.message);
+                }
+                return;
+            }
+
+            // ── Commands need prefix ──
             if (body.indexOf(prefix) !== 0) return;
 
             const commandText = body.slice(prefix.length).trim();
@@ -269,7 +311,16 @@ module.exports = function (sock) {
             try {
                 const botState = require("../lib/botState");
                 if (botState.isSleeping()) {
-                    const allowed = ["up", "wake", "awake", "resume", "sleep", "refresh", "alive", "ping"];
+                    const allowed = [
+                        "up",
+                        "wake",
+                        "awake",
+                        "resume",
+                        "sleep",
+                        "refresh",
+                        "alive",
+                        "ping"
+                    ];
                     if (allowed.indexOf(commandName) === -1) return;
                 }
             } catch (e) {}
@@ -277,17 +328,26 @@ module.exports = function (sock) {
             const command = commands.get(commandName);
 
             if (!command) {
-                await sock.sendMessage(
-                    from,
-                    {
-                        text:
-                            "╭━━〔 ❓ VENOM X 〕━━⬣\n\n" +
-                            "❌ Command not found: " + prefix + commandName + "\n\n" +
-                            "Type " + prefix + "menu or " + prefix + "m to see all commands.\n\n" +
-                            "╰━━━━━━━━━━━━━━━━⬣"
-                    },
-                    { quoted: msg }
-                ).catch(function () {});
+                await sock
+                    .sendMessage(
+                        from,
+                        {
+                            text:
+                                "╭━━〔 ❓ VENOM X 〕━━⬣\n\n" +
+                                "❌ Command not found: " +
+                                prefix +
+                                commandName +
+                                "\n\n" +
+                                "Type " +
+                                prefix +
+                                "menu or " +
+                                prefix +
+                                "m to see all commands.\n\n" +
+                                "╰━━━━━━━━━━━━━━━━⬣"
+                        },
+                        { quoted: msg }
+                    )
+                    .catch(function () {});
                 return;
             }
 
@@ -296,8 +356,10 @@ module.exports = function (sock) {
                 return;
             }
 
-            // Private mode: only owner can run commands
-            if (String(settings.mode || "").toLowerCase() === "private" && !isOwner) {
+            if (
+                String(settings.mode || "").toLowerCase() === "private" &&
+                !isOwner
+            ) {
                 return;
             }
 
@@ -310,9 +372,11 @@ module.exports = function (sock) {
             };
 
             const reactEmoji = reactions[commandName] || reactions.default;
-            sock.sendMessage(from, {
-                react: { text: reactEmoji, key: msg.key }
-            }).catch(function () {});
+            sock
+                .sendMessage(from, {
+                    react: { text: reactEmoji, key: msg.key }
+                })
+                .catch(function () {});
 
             console.log("🚀 RUNNING COMMAND:", commandName);
             const start = Date.now();
@@ -334,14 +398,18 @@ module.exports = function (sock) {
                     reply: reply
                 });
 
-                console.log("✅ " + commandName + " finished in " + (Date.now() - start) + "ms");
+                console.log(
+                    "✅ " + commandName + " finished in " + (Date.now() - start) + "ms"
+                );
             } catch (err) {
                 console.log("❌ Command Error [" + commandName + "]:", err.message);
-                await sock.sendMessage(
-                    from,
-                    { text: "❌ Error: " + err.message },
-                    { quoted: msg }
-                ).catch(function () {});
+                await sock
+                    .sendMessage(
+                        from,
+                        { text: "❌ Error: " + err.message },
+                        { quoted: msg }
+                    )
+                    .catch(function () {});
             }
         } catch (err) {
             console.log("❌ MESSAGE HANDLER ERROR:", err.message);

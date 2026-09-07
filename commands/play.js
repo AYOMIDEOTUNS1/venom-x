@@ -29,8 +29,7 @@ async function downloadAudioFast(videoUrl, outPath) {
     // - no playlist
     // - no warnings spam
     // - prefer m4a/webm quickly then convert
-    await execFileAsync(
-        "yt-dlp",
+    await runYtDlp(
         [
             "-f", "bestaudio[ext=m4a]/bestaudio/best",
             "-x",
