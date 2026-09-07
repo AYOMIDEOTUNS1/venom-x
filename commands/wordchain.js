@@ -80,7 +80,7 @@ function scheduleTurn(sock, from, game, reply) {
 
 module.exports = {
     name: "wordchain",
-    aliases: ["wc", "wordgame", "chain"],
+    aliases: ["wc", "wcg", "wordgame", "chain"],
 
     run: async function ({ sock, from, sender, args, reply, message, isGroup }) {
         if (!isGroup) {
