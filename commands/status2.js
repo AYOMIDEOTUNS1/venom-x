@@ -1,7 +1,6 @@
 /**
- * 🔥 VENOM X - ADVANCED GROUP STATUS V3 (SUDO PROTECTED)
- * Multi-group • Colors • Audience • Cooldown • Auto-delete
- * Only Owner + Sudo can use
+ * 🔥 VENOM X - GROUP STATUS V4 (Clean + Stable)
+ * Multi-group | Colors | Sudo Protected | No Auto-Delete
  */
 
 'use strict';
@@ -31,7 +30,7 @@ const COLOR_MAP = {
     dark: '#263238', grey: '#607D8B', white: '#FAFAFA', brown: '#795548',
     gold: '#F9A825', maroon: '#880E4F'
 };
-const DEFAULT_COLOR = COLOR_MAP.purple;
+const DEFAULT_COLOR = '#9C27B0';
 
 function tmp(ext) {
     return path.join(os.tmpdir(), `venom_\( {crypto.randomBytes(6).toString('hex')}. \){ext}`);
@@ -92,12 +91,8 @@ function pickColor(groupId, inlineColor) {
     return resolveColor(saved) || DEFAULT_COLOR;
 }
 
-function normalizeJid(jid) {
-    return String(jid || '').trim().replace(/:[^@]*/, '');
-}
-
 function extractDigits(jid) {
-    return normalizeJid(jid).split('@')[0].replace(/\D/g, '');
+    return String(jid || '').replace(/\D/g, '');
 }
 
 function loadGroupsDiskCache() {
@@ -135,7 +130,7 @@ async function fetchUserGroups(sock, senderId, forceRefresh = false) {
             rawMap = await sock.groupFetchAllParticipating();
         }
     } catch (e) {
-        console.warn('[GCSTATUS] groupFetchAllParticipating failed:', e.message);
+        console.warn('[GCSTATUS] Failed to fetch groups:', e.message);
     }
 
     if (!Object.keys(rawMap).length && sock.chats) {
@@ -185,7 +180,7 @@ function getMediaType(msg) {
 
 async function downloadMedia(message, type) {
     const mediaMsg = message[`${type}Message`];
-    if (!mediaMsg) throw new Error(`No ${type} payload`);
+    if (!mediaMsg) throw new Error(`No ${type} payload found`);
     const stream = await downloadContentFromMessage(mediaMsg, type);
     const chunks = [];
     for await (const chunk of stream) chunks.push(chunk);
@@ -238,12 +233,12 @@ module.exports = {
 
     run: async ({ sock, from, message, args, reply, isGroup, isOwner, isSudo, sender }) => {
 
-        // ========== SUDO / OWNER ONLY ==========
+        // Only Owner + Sudo
         if (!isOwner && !isSudo) {
             return reply('🚫 *Owner / Sudo only.*');
         }
-        // =======================================
 
+        // Cooldown
         const now = Date.now();
         if (userCooldown.has(sender) && now - userCooldown.get(sender) < COOLDOWN_MS) {
             const left = Math.ceil((COOLDOWN_MS - (now - userCooldown.get(sender))) / 1000);
@@ -256,32 +251,32 @@ module.exports = {
             message.message?.videoMessage?.contextInfo?.quotedMessage ||
             message.message?.audioMessage?.contextInfo?.quotedMessage;
 
-        // Help
+        // Help menu
         if (!text && !quoted) {
-            return reply(`╭━━━『 *VENOM X GROUP STATUS V3* 』━━━
+            return reply(`╭━━━『 *VENOM X GROUP STATUS V4* 』━━━
 │
 │  *Text Status*
-│  ▸ #status2 Hello world
-│  ▸ #status2 1,3,5 Hello
-│  ▸ #status2 all Big announcement
+│  ▸ #gcstatus Hello world
+│  ▸ #gcstatus 1,3,5 Hello
+│  ▸ #gcstatus all Big announcement
 │
 │  *Media Status*
 │  ▸ Reply to image/video/audio/sticker
-│  ▸ #status2 1,2
-│  ▸ #status2 all
+│  ▸ #gcstatus 1,2
+│  ▸ #gcstatus all
 │
 │  *Colors*
-│  ▸ #status2 --color gold Hello
-│  ▸ #status2 --color #FF0000 Hello
-│  ▸ #status2 --color random Hello
+│  ▸ #gcstatus --color gold Hello
+│  ▸ #gcstatus --color #FF0000 Hello
+│  ▸ #gcstatus --color random Hello
 │
 │  *Settings*
-│  ▸ #status2 list
-│  ▸ #status2 setcolor purple
-│  ▸ #status2 setaudience close
+│  ▸ #gcstatus list
+│  ▸ #gcstatus setcolor purple
+│  ▸ #gcstatus setaudience close
 │
 ╰━━━━━━━━━━━━━━━━━━━━━━━━━━
-*Only Owner + Sudo can use*`);
+*Only Owner + Sudo*`);
         }
 
         // List groups
@@ -295,8 +290,7 @@ module.exports = {
 │
 ${formatted}
 │
-│  Usage: #status2 1,3,5 text
-│  Or: #status2 1-5 text
+│  Usage: #gcstatus 1,3,5 text
 ╰━━━━━━━━━━━━━━━━━━━━━`);
         }
 
@@ -304,7 +298,7 @@ ${formatted}
         if (text.toLowerCase().startsWith('setcolor')) {
             if (!isGroup) return reply('❌ Use this inside a group.');
             const colorName = text.slice(8).trim().toLowerCase();
-            if (!colorName) return reply('Example: #status2 setcolor purple');
+            if (!colorName) return reply('Example: #gcstatus setcolor purple');
             if (colorName === 'random') {
                 setGroupColor(from, 'random');
                 return reply('✅ Group color set to *random*');
@@ -312,7 +306,7 @@ ${formatted}
             const resolved = resolveColor(colorName);
             if (!resolved) return reply(`❌ Invalid color.\nAvailable: ${Object.keys(COLOR_MAP).join(', ')}`);
             setGroupColor(from, colorName);
-            return reply(`✅ Group color saved: *${colorName}*`);
+            return reply(`✅ Group color saved as *${colorName}*`);
         }
 
         // Set audience
@@ -320,13 +314,13 @@ ${formatted}
             if (!isGroup) return reply('❌ Use this inside a group.');
             const val = text.slice(11).trim().toLowerCase();
             if (!['all', 'close', 'closefriends'].includes(val)) {
-                return reply('Usage: #status2 setaudience all / close');
+                return reply('Usage: #gcstatus setaudience all / close');
             }
             setGroupAudience(from, val === 'all' ? 'all' : 'close');
             return reply(`✅ Audience set to *${val}*`);
         }
 
-        // Parse targets + content
+        // Parse targets
         let targetSpecs = [];
         let contentText = text;
         let inlineColor = null;
@@ -378,7 +372,7 @@ ${formatted}
         targetJids = [...new Set(targetJids)];
 
         if (!targetJids.length) {
-            return reply('❌ No valid groups found.\nUse *#status2 list* to see your groups.');
+            return reply('❌ No valid groups found.\nUse *#gcstatus list* to see your groups.');
         }
 
         // Build content
@@ -391,7 +385,7 @@ ${formatted}
                 if (!type) return reply('❌ Reply to an image, video, audio or sticker.');
 
                 const buffer = await downloadMedia(mediaPayload, type);
-                if (!buffer?.length) throw new Error('Empty media');
+                if (!buffer?.length) throw new Error('Failed to download media');
 
                 if (type === 'audio') {
                     const voice = await convertToVoice(buffer);
@@ -409,15 +403,15 @@ ${formatted}
                     };
                 }
             } else {
-                if (!contentText) return reply('❌ Provide text or reply to media.');
+                if (!contentText) return reply('❌ Please provide text or reply to media.');
                 content = { text: contentText };
             }
         } catch (err) {
-            console.error('[GCSTATUS Media]', err);
+            console.error('[GCSTATUS] Media Error:', err);
             return reply(`❌ Failed to process media: ${err.message}`);
         }
 
-        // Posting
+        // Start posting
         userCooldown.set(sender, Date.now());
         await reply(`🚀 Posting to *${targetJids.length}* group(s)...`);
 
@@ -431,16 +425,14 @@ ${formatted}
                 await postGroupStatus(sock, jid, content, color, audience);
                 success++;
             } catch (e) {
-                console.error(`[GCSTATUS] Failed ${jid}:`, e.message);
+                console.error(`[GCSTATUS] Failed on ${jid}:`, e.message);
                 failed++;
             }
-            if (targetJids.length > 1) await new Promise(r => setTimeout(r, 700));
-        }
 
-        // Auto delete command
-        try {
-            await sock.sendMessage(from, { delete: message.key });
-        } catch {}
+            if (targetJids.length > 1) {
+                await new Promise(r => setTimeout(r, 800));
+            }
+        }
 
         return reply(`✅ *Group Status Posted!*\n\n• Success: *\( {success}*\n• Failed: * \){failed}*\n• Total: *${targetJids.length}*`);
     }
