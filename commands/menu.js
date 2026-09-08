@@ -20,53 +20,26 @@ function loadMenuImages() {
             menuImages = [];
             return;
         }
-        menuImages = fs
-            .readdirSync(menuImageDir)
-            .filter(function (file) {
-                return /\.(jpg|jpeg|png|webp)$/i.test(file);
-            })
-            .map(function (file) {
-                return path.join(menuImageDir, file);
-            });
-    } catch (error) {
+        menuImages = fs.readdirSync(menuImageDir)
+            .filter(f => /\.(jpg|jpeg|png|webp)$/i.test(f))
+            .map(f => path.join(menuImageDir, f));
+    } catch {
         menuImages = [];
     }
 }
-
 loadMenuImages();
 
 function pickRandomImage() {
     if (!menuImages.length) loadMenuImages();
-    if (!menuImages.length) return null;
-    return menuImages[Math.floor(Math.random() * menuImages.length)];
+    return menuImages.length ? menuImages[Math.floor(Math.random() * menuImages.length)] : null;
 }
 
 function getTimeInfo() {
     const now = new Date();
-    const time = new Intl.DateTimeFormat("en-NG", {
-        timeZone: "Africa/Lagos",
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-        hour12: true
-    }).format(now);
-    const day = new Intl.DateTimeFormat("en-NG", {
-        timeZone: "Africa/Lagos",
-        weekday: "long"
-    }).format(now);
-    const date = new Intl.DateTimeFormat("en-NG", {
-        timeZone: "Africa/Lagos",
-        day: "2-digit",
-        month: "long",
-        year: "numeric"
-    }).format(now);
-    const hour = Number(
-        new Intl.DateTimeFormat("en-NG", {
-            timeZone: "Africa/Lagos",
-            hour: "numeric",
-            hour12: false
-        }).format(now)
-    );
+    const time = new Intl.DateTimeFormat("en-NG", { timeZone: "Africa/Lagos", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true }).format(now);
+    const day = new Intl.DateTimeFormat("en-NG", { timeZone: "Africa/Lagos", weekday: "long" }).format(now);
+    const date = new Intl.DateTimeFormat("en-NG", { timeZone: "Africa/Lagos", day: "2-digit", month: "long", year: "numeric" }).format(now);
+    const hour = Number(new Intl.DateTimeFormat("en-NG", { timeZone: "Africa/Lagos", hour: "numeric", hour12: false }).format(now));
     let greeting = "Good night";
     if (hour >= 5 && hour < 12) greeting = "Good morning";
     else if (hour >= 12 && hour < 17) greeting = "Good afternoon";
@@ -83,17 +56,16 @@ function getCommandRegistry(sock) {
     if (registry instanceof Map && registry.size) return registry;
     const fallback = new Map();
     try {
-        const folder = path.join(__dirname);
-        const files = fs.readdirSync(folder).filter(f => f.endsWith(".js") && f !== "menu.js");
+        const files = fs.readdirSync(__dirname).filter(f => f.endsWith(".js") && f !== "menu.js");
         for (const file of files) {
             try {
-                const fullPath = path.join(folder, file);
-                delete require.cache[require.resolve(fullPath)];
-                const command = require(fullPath);
-                if (command) fallback.set(cleanName(file), command);
-            } catch (e) {}
+                const full = path.join(__dirname, file);
+                delete require.cache[require.resolve(full)];
+                const cmd = require(full);
+                if (cmd) fallback.set(cleanName(file), cmd);
+            } catch {}
         }
-    } catch (e) {}
+    } catch {}
     return fallback;
 }
 
@@ -101,46 +73,33 @@ function buildCommands(registry) {
     const commands = new Map();
     const seen = new Set();
     registry.forEach((command, key) => {
-        if (!command || typeof command !== "object") return;
-        if (seen.has(command)) return;
+        if (!command || seen.has(command)) return;
         seen.add(command);
         const name = cleanName(command.name || key);
-        if (!name) return;
-        if (!commands.has(name)) commands.set(name, { name, command });
+        if (name) commands.set(name, command);
     });
     return commands;
 }
 
 const categories = {
-    "🧠 AI": ["ai", "ask", "venomai", "gpt", "vision", "imagine", "reimagine", "translate", "rewrite", "summarize", "code", "fixcode", "explain"],
+    "🧠 AI": ["ai", "ask", "venomai", "gpt", "vision", "imagine", "reimagine", "translate", "rewrite", "summarize", "code", "fixcode", "explain", "nano", "nanopro"],
     "🎨 IMAGE": ["hd", "tohd", "hdify", "sticker", "s", "toimg", "toimage", "cropsticker", "getpp", "stickerpack", "take", "steal", "takeall", "animepic", "meme", "wallpaper", "blur", "wanted", "emojimix", "removebg"],
     "🔞 NSFW": ["xv", "xvphoto", "xvpics", "animepic", "ass", "boobs", "hentai", "waifu", "neko", "pussy"],
-    "📥 DOWNLOADS": ["tiktok", "tt", "ytmp3", "ytmp4", "ig", "fb", "play", "spotify", "mediafire", "gitclone", "xv", "vv", "vv2"],
+    "📥 DOWNLOADS": ["tiktok", "tt", "ytmp3", "ytmp4", "ig", "fb", "play", "spotify", "mediafire", "gitclone", "xv", "vv", "vv2", "tiktokboost", "ttboost"],
     "🎵 MUSIC": ["play", "song", "lyrics", "shazam", "bass", "ytmp3"],
-    "👥 GROUP": ["tagall", "hidetag", "kick", "add", "promote", "demote", "warn", "warnings", "delwarn", "resetwarn", "antilink", "antichannelmessage", "antistatustag", "welcome", "goodbye", "open", "close", "groupinfo", "status2", "setname", "setdesc", "linkgroup", "revoke"],
+    "👥 GROUP": ["tagall", "hidetag", "kick", "add", "promote", "demote", "warn", "warnings", "delwarn", "resetwarn", "antilink", "antichannelmessage", "antistatustag", "welcome", "goodbye", "open", "close", "groupinfo", "status2", "gcstatus", "setname", "setdesc", "linkgroup", "revoke"],
     "💰 ECONOMY": ["bal", "daily", "weekly", "monthly", "work", "deposit", "withdraw", "pay", "rob", "jail", "bail", "escape", "economy", "bank", "bankupgrade", "market", "aza"],
     "🎮 GAMES": ["coinflip", "slots", "guess", "blackjack", "dice", "rps", "battle", "duel", "accept", "games", "stats", "lb", "glb"],
-    "✨ ANIME MENU": ["anime", "manga", "rwaifu", "waifu", "neko", "shinobu", "megumin", "animekill", "animelick", "animebite", "animeglomp", "animehappy", "animedance", "animecringe", "animehighfive", "animepoke", "animewink", "animesmile", "animesmug", "animewlp", "animesearch", "animeavatar", "cry", "kill", "hug", "happy", "dance", "handhold", "highfive", "slap", "kiss", "blush", "bite", "cuddle", "bonk", "pat", "nom", "furbrat"],
+    "✨ ANIME MENU": ["anime", "manga", "rwaifu", "waifu", "neko", "shinobu", "megumin", "itadori", "animekill", "animelick", "animebite", "animeglomp", "animehappy", "animedance", "animecringe", "animehighfive", "animepoke", "animewink", "animesmile", "animesmug", "animewlp", "animesearch", "animeavatar", "cry", "kill", "hug", "happy", "dance", "handhold", "highfive", "slap", "kiss", "blush", "bite", "cuddle", "bonk", "pat", "nom", "furbrat"],
     "🔥 ANIME LOVERS": ["animelovers", "animecharacters", "animesearch", "chiho", "doraemon", "elaina", "emilia", "erza", "exo", "femdom", "freefire", "gamewallpaper", "glasses", "gremory", "hacker", "cosplay", "cyber", "akiyama", "ana", "art", "asuna", "ayuzawa", "boruto", "bts", "cecan", "deidara", "hestia", "husbu", "inori", "islamic", "isuzu", "itachi", "itori", "jennie", "jiso", "justina", "kaga", "kagura", "kakashi", "kaori", "keneki", "kotori", "kurumi", "loli", "madara", "megumin", "mikasa", "miku", "minato", "mountain", "naruto", "nekonime", "nezuko", "onepiece", "programming", "randblackpink", "rize", "rose", "ryujin", "sakura", "sasuke", "sagiri", "satanic", "space", "technology", "tsunade", "waifu", "wallhp", "wallml", "wallmlnime", "yotsuba", "yuki", "yulibocil", "yumeko"],
     "😝 FUN MENU": ["fun", "ronaldo", "zuck", "billgates", "elonmusk", "justinbieber", "donaldtrump", "joebiden", "johnnysins", "miakhalifa", "therock", "rihanna", "taylorswift", "tomcruise", "tomholland", "wouldyou", "flirt", "moe", "sfw", "cartoonify", "story", "rate", "ship", "truthdare", "compliment", "roast", "trivia", "joke", "truth", "dare", "meme", "advice", "urban", "moviequote", "triviafact", "inspire", "ascii", "progquote", "dadjoke", "prog", "quotememe", "funfact", "panda", "bird", "koala", "fox", "dog", "fact", "paptt", "chinagirl", "bluearchive", "boypic", "carimage", "random-girl", "hijab-girl", "indonesia-girl", "japan-girl", "korean-girl", "malaysia-girl", "profile-pictures", "thailand-girl", "tiktok-girl", "vietnam-girl", "aipic", "hentai"],
-    "⚙️ UTILITY": ["ping", "alive", "menu", "owner", "profile", "vcf", "delete", "info", "save", "vv", "vv2", "sleep", "up", "refresh", "pair", "weather", "calc", "qr", "tts", "short", "poll"],
-    "👑 OWNER": ["public", "private", "shutdown", "restart", "backup", "broadcast", "reset", "update", "block", "unblock", "sleep", "up", "refresh", "pair"]
+    "⚙️ UTILITY": ["ping", "alive", "menu", "owner", "profile", "vcf", "delete", "info", "save", "vv", "vv2", "sleep", "up", "refresh", "pair", "weather", "calc", "qr", "tts", "short", "poll", "getjid", "reactch"],
+    "👑 OWNER": ["public", "private", "shutdown", "restart", "backup", "broadcast", "reset", "update", "block", "unblock", "sleep", "up", "refresh", "pair", "sudo"]
 };
 
-function formatCommand(prefix, name) {
-    return "┃ " + prefix + name;
-}
-
-function buildCategory(title, names, prefix, used) {
-    const rows = [];
-    for (const n of names) {
-        const key = cleanName(n);
-        if (used.has(title + ":" + key)) continue;
-        used.add(title + ":" + key);
-        rows.push(formatCommand(prefix, key));
-    }
-    if (!rows.length) return "";
-    return "╭━━〔 " + title + " 〕━━⬣\n" + rows.join("\n") + "\n╰━━━━━━━━━━━━━━━━⬣";
+function buildCategory(title, names, prefix) {
+    const rows = names.map(name => `┃ \( {prefix} \){name}`);
+    return `╭━━〔 \( {title} 〕━━⬣\n \){rows.join("\n")}\n╰━━━━━━━━━━━━━━━━⬣`;
 }
 
 module.exports = {
@@ -157,13 +116,11 @@ module.exports = {
         const registry = getCommandRegistry(sock);
         const commands = buildCommands(registry);
         const totalCommands = commands.size;
-
+        const pushName = message.pushName || "User";
         const arg = (args[0] || "").toLowerCase();
 
-        // ==================== SMALL MENU (DEFAULT) ====================
+        // ==================== SMALL MENU (UNTOUCHED) ====================
         if (arg !== "all" && arg !== "full") {
-            const pushName = message.pushName || "User";
-
             const smallMenu = 
 `╭━━━「 🌀 *${botName}* 🌀 」━━━
 ┃
@@ -183,7 +140,6 @@ module.exports = {
 > _Powered by VENOM X_ ⚡`;
 
             const selectedImage = pickRandomImage();
-
             try {
                 if (selectedImage && fs.existsSync(selectedImage)) {
                     await sock.sendMessage(from, {
@@ -193,20 +149,16 @@ module.exports = {
                 } else {
                     await sock.sendMessage(from, { text: smallMenu }, { quoted: message });
                 }
-            } catch (e) {
+            } catch {
                 await sock.sendMessage(from, { text: smallMenu }, { quoted: message }).catch(() => {});
             }
             return;
         }
 
         // ==================== FULL MENU ====================
-        const used = new Set();
-        const sections = [];
-
-        for (const title of Object.keys(categories)) {
-            const section = buildCategory(title, categories[title], prefix, used);
-            if (section) sections.push(section);
-        }
+        const sections = Object.entries(categories).map(([title, names]) =>
+            buildCategory(title, names, prefix)
+        );
 
         const menuText =
 `╭━━〔 🤖 ${botName} MENU 〕━━⬣
@@ -238,7 +190,6 @@ ${sections.join("\n\n")}
 ╰━━━━━━━━━━━━━━━━⬣`;
 
         const selectedImage = pickRandomImage();
-
         try {
             if (selectedImage && fs.existsSync(selectedImage)) {
                 await sock.sendMessage(from, {
@@ -248,7 +199,7 @@ ${sections.join("\n\n")}
             } else {
                 await sock.sendMessage(from, { text: menuText }, { quoted: message });
             }
-        } catch (error) {
+        } catch {
             await sock.sendMessage(from, { text: menuText }, { quoted: message }).catch(() => {});
         }
     }

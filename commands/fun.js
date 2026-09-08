@@ -48,7 +48,26 @@ const TRUTHS = [
     "What is your most embarrassing nickname?",
     "Have you ever broken a promise on purpose?",
     "What do you fake being good at?",
-    "Who do you secretly envy?"
+    "Who do you secretly envy?",
+    "What’s the dumbest thing you’ve done for love?",
+    "Have you ever cried because of a movie?",
+    "What’s one thing you’re addicted to?",
+    "Who was your worst kiss?",
+    "Have you ever pretended to like a gift?",
+    "What’s your biggest turn-off?",
+    "Have you ever had a crush on a teacher?",
+    "What’s the most childish thing you still do?",
+    "Who do you think about before sleeping?",
+    "Have you ever been caught stalking?",
+    "What’s your biggest insecurity about your body?",
+    "Have you ever liked a friend’s partner?",
+    "What’s the biggest lie you’ve told your parents?",
+    "Who in this group would you date?",
+    "Have you ever screenshot a chat and shared it?",
+    "What’s one thing you hope nobody finds out?",
+    "Have you ever ignored a text on purpose for days?",
+    "What’s your most toxic trait?",
+    "Who was the last person you deep-stalked?"
 ];
 
 const DARES = [
@@ -76,7 +95,22 @@ const DARES = [
     "Write a 2-line rap about WiFi.",
     "Act like a robot for one message.",
     "Name 3 things you can see right now.",
-    "End your next message with a random emoji chain."
+    "End your next message with a random emoji chain.",
+    "Send a voice note saying 'I am the best' in a funny accent.",
+    "Change your profile picture to something ugly for 5 minutes.",
+    "Send a message without using the letter 'A'.",
+    "Write a short story in 3 sentences about the last person who messaged you.",
+    "Send a voice note singing the chorus of any song.",
+    "Talk in third person for the next 3 messages.",
+    "Send a screenshot of your battery percentage.",
+    "Compliment yourself in the most dramatic way possible.",
+    "Send a message using only song lyrics.",
+    "Act like you’re a celebrity for one message.",
+    "Send a voice note explaining how to cook noodles like it’s a cooking show.",
+    "Write a break-up message to your pillow.",
+    "Send 7 random emojis and make the group guess the meaning.",
+    "Type your next message with your eyes closed.",
+    "Send a motivational speech as if you’re a coach."
 ];
 
 const ROASTS = [
@@ -89,7 +123,22 @@ const ROASTS = [
     "Your secrets are safe with me. I wasn't listening.",
     "Mirror called. It wants a break.",
     "Your brain has buffering issues.",
-    "Even your shadow leaves you sometimes."
+    "Even your shadow leaves you sometimes.",
+    "You're proof that evolution can go in reverse.",
+    "Your confidence is impressive for someone with your face.",
+    "You have the personality of a damp towel.",
+    "If stupidity was a currency, you'd be a billionaire.",
+    "You're not ugly, you're just... creatively challenged.",
+    "Your life is like a group project — someone else is doing all the work.",
+    "You're the human version of a participation trophy.",
+    "I'd agree with you but then we'd both be wrong.",
+    "You're like a cloud. When you disappear, it's a beautiful day.",
+    "Your family tree must be a cactus because everyone on it is a prick.",
+    "You're the reason shampoo bottles have instructions.",
+    "You're not completely useless... you can always serve as a bad example.",
+    "Somewhere out there, a tree is working hard to produce oxygen for you. You owe it an apology.",
+    "You're like a software update. Nobody wants you, but we're forced to deal with you.",
+    "You're the human equivalent of a 404 error."
 ];
 
 const COMPLIMENTS = [
@@ -98,18 +147,80 @@ const COMPLIMENTS = [
     "You have good taste. Obviously.",
     "You're lowkey inspirational.",
     "You're the main character today.",
-    "Keep going. You're built for this."
+    "Keep going. You're built for this.",
+    "You have a really calming presence.",
+    "Your sense of humor is underrated.",
+    "You make conversations interesting.",
+    "You're smarter than you give yourself credit for.",
+    "You have good vibes only.",
+    "People are lucky to know you.",
+    "You light up the chat without trying.",
+    "You're doing better than you realize.",
+    "Your kindness doesn't go unnoticed.",
+    "You have a unique way of seeing things.",
+    "You're more confident than you think.",
+    "You make people feel comfortable.",
+    "You're quietly powerful.",
+    "You're one of the real ones."
 ];
 
 const FLIRTS = [
     "Are you WiFi? Because I feel a connection.",
     "Is your name Google? Because you have everything I've been searching for.",
     "You must be tired, because you've been running through my mind all day.",
-    "If beauty was time, you'd be eternity."
+    "If beauty was time, you'd be eternity.",
+    "Do you have a map? I just got lost in your eyes.",
+    "Are you a magician? Because whenever I look at you, everyone else disappears.",
+    "If you were a song, you'd be my favorite playlist.",
+    "Are you made of copper and tellurium? Because you're Cu-Te.",
+    "I must be a snowflake, because I've fallen for you.",
+    "If looks could kill, you'd be a weapon of mass destruction.",
+    "You're so beautiful that you made me forget my pickup line.",
+    "Do you believe in love at first sight, or should I walk by again?",
+    "If you were a vegetable, you'd be a cute-cumber.",
+    "Are you a parking ticket? Because you've got 'FINE' written all over you.",
+    "I'm not a photographer, but I can picture us together.",
+    "If beauty were a crime, you'd be serving a life sentence.",
+    "Is your dad a boxer? Because you're a knockout!",
+    "I was wondering if you had an extra heart... mine seems to have been stolen.",
+    "You must be a broom, because you just swept me off my feet."
 ];
 
+// Better prompts for characters
+const PROMPTS = {
+    ronaldo: "Cristiano Ronaldo face portrait, realistic photo, high quality, sharp",
+    itadori: "Yuji Itadori from Jujutsu Kaisen, anime style, detailed face, pink spiky hair, accurate",
+    zuck: "Mark Zuckerberg portrait photo, realistic, high quality",
+    elonmusk: "Elon Musk portrait photo, realistic, high quality",
+    billgates: "Bill Gates portrait photo, realistic",
+    justinbieber: "Justin Bieber portrait photo, realistic",
+    donaldtrump: "Donald Trump portrait photo, realistic",
+    joebiden: "Joe Biden portrait photo, realistic",
+    therock: "Dwayne Johnson The Rock portrait photo, realistic",
+    rihanna: "Rihanna portrait photo, realistic, beautiful",
+    taylorswift: "Taylor Swift portrait photo, realistic",
+    tomcruise: "Tom Cruise portrait photo, realistic",
+    tomholland: "Tom Holland portrait photo, realistic",
+    miakhalifa: "Mia Khalifa portrait photo",
+    johnnysins: "Johnny Sins portrait photo",
+    "tiktok-girl": "beautiful young woman, tiktok style, realistic photo, pretty face, high quality",
+    "korean-girl": "beautiful korean girl, realistic photo, pretty face, high quality",
+    "japan-girl": "beautiful japanese girl, realistic photo, pretty face",
+    "china-girl": "beautiful chinese girl, realistic photo, pretty face",
+    "hijab-girl": "beautiful girl wearing hijab, realistic photo, elegant",
+    "random-girl": "beautiful young woman portrait, realistic photo, high quality",
+    "indonesia-girl": "beautiful indonesian girl, realistic photo",
+    "malaysia-girl": "beautiful malaysian girl, realistic photo",
+    "thailand-girl": "beautiful thai girl, realistic photo",
+    "vietnam-girl": "beautiful vietnamese girl, realistic photo",
+    hentai: "anime girl, hentai style, detailed",
+    moe: "cute anime girl, moe style, detailed eyes",
+    sfw: "cute anime girl, safe for work, detailed",
+    aipic: "beautiful anime girl, highly detailed, anime style"
+};
+
 const IMAGE_CMDS = [
-    "ronaldo", "zuck", "billgates", "elonmusk", "justinbieber", "donaldtrump", "joebiden",
+    "ronaldo", "itadori", "zuck", "billgates", "elonmusk", "justinbieber", "donaldtrump", "joebiden",
     "johnnysins", "miakhalifa", "therock", "rihanna", "taylorswift", "tomcruise", "tomholland",
     "chinagirl", "bluearchive", "boypic", "carimage", "random-girl", "hijab-girl",
     "indonesia-girl", "japan-girl", "korean-girl", "malaysia-girl", "profile-pictures",
@@ -147,7 +258,7 @@ async function sendCard(sock, from, message, kind, text) {
         }
         await sock.sendMessage(from, { text: caption }, { quoted: message });
     } catch (e) {
-        await sock.sendMessage(from, { text: caption }, { quoted: message }).catch(function () {});
+        await sock.sendMessage(from, { text: caption }, { quoted: message }).catch(() => {});
     }
 }
 
@@ -215,9 +326,10 @@ module.exports = {
             }
         }
 
-        // IMAGE COMMANDS
-        if (IMAGE_CMDS.indexOf(cmd) !== -1) {
-            await reply("✨ Loading " + cmd + "...");
+        // ========== IMAGE COMMANDS ==========
+        if (IMAGE_CMDS.includes(cmd)) {
+            await reply(`✨ Loading *${cmd}*...`);
+
             try {
                 const { getImageBuffer } = getImageFetch();
 
@@ -225,35 +337,29 @@ module.exports = {
                     const buf = await getImageBuffer({ dog: true });
                     await sock.sendMessage(from, {
                         image: buf,
-                        caption: "😝 dog\n⚡ VENOM X"
+                        caption: `😝 *dog*\n⚡ VENOM X`
                     }, { quoted: message });
                     return;
                 }
 
-                let prompt = cmd.replace(/-/g, " ");
-                if (cmd === "tiktok-girl") prompt = "beautiful young woman portrait photo";
-                if (cmd === "ronaldo") prompt = "cristiano ronaldo portrait photo";
-                if (cmd === "zuck") prompt = "mark zuckerberg portrait photo";
-                if (cmd === "elonmusk") prompt = "elon musk portrait photo";
-                if (cmd === "miakhalifa") prompt = "mia khalifa portrait photo";
-                if (cmd === "hentai") prompt = "anime girl anime style";
-                if (cmd === "moe" || cmd === "sfw" || cmd === "aipic") prompt = "cute anime girl";
+                const prompt = PROMPTS[cmd] || (cmd.replace(/-/g, " ") + " portrait, high quality");
 
                 const buf = await getImageBuffer({
                     prompt: prompt,
-                    nekoType: cmd === "hentai" ? "hentai" : "neko"
+                    nekoType: ["hentai", "moe", "sfw", "aipic"].includes(cmd) ? (cmd === "hentai" ? "hentai" : "neko") : null
                 });
 
                 await sock.sendMessage(from, {
                     image: buf,
-                    caption: "😝 " + cmd + "\n⚡ VENOM X"
+                    caption: `😝 *${cmd}*\n⚡ VENOM X`
                 }, { quoted: message });
+
             } catch (err) {
-                return reply("❌ Image failed:\n" + err.message);
+                return reply(`❌ Image failed:\n${err.message}`);
             }
             return;
         }
 
-        return reply("🎲 Try: #truth #dare #roast #fun #tiktok-girl");
+        return reply("🎲 Try: #truth #dare #roast #fun #itadori #ronaldo");
     }
 };
