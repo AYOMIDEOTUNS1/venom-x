@@ -1,6 +1,7 @@
 /**
- * 🔥 VENOM X - ADVANCED GROUP STATUS V3
+ * 🔥 VENOM X - ADVANCED GROUP STATUS V3 (SUDO PROTECTED)
  * Multi-group • Colors • Audience • Cooldown • Auto-delete
+ * Only Owner + Sudo can use
  */
 
 'use strict';
@@ -235,7 +236,13 @@ module.exports = {
     name: "status2",
     aliases: ["gcstatus", "gstatus", "groupstatus", "gcs"],
 
-    run: async ({ sock, from, message, args, reply, isGroup, isOwner, sender }) => {
+    run: async ({ sock, from, message, args, reply, isGroup, isOwner, isSudo, sender }) => {
+
+        // ========== SUDO / OWNER ONLY ==========
+        if (!isOwner && !isSudo) {
+            return reply('🚫 *Owner / Sudo only.*');
+        }
+        // =======================================
 
         const now = Date.now();
         if (userCooldown.has(sender) && now - userCooldown.get(sender) < COOLDOWN_MS) {
@@ -273,7 +280,8 @@ module.exports = {
 │  ▸ #status2 setcolor purple
 │  ▸ #status2 setaudience close
 │
-╰━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+╰━━━━━━━━━━━━━━━━━━━━━━━━━━
+*Only Owner + Sudo can use*`);
         }
 
         // List groups
