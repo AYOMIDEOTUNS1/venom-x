@@ -1,223 +1,158 @@
-const fs = require("fs");
-const path = require("path");
-const os = require("os");
-const axios = require("axios");
+/**
+ * 🎵 Apple Music Search & Download (Upgraded)
+ * Commands: #play / #apple
+ * 
+ * Features:
+ * - Search results with cover
+ * - High quality audio download
+ * - Nice captions
+ */
 
-const PIPED_APIS = [
-    "https://pipedapi.kavin.rocks",
-    "https://pipedapi.in.projectsegfau.lt",
-    "https://api.piped.private.coffee",
-    "https://pipedapi.adminforge.de"
-];
+const axios = require('axios');
 
-function isUrl(t) {
-    return /^https?:\/\//i.test(String(t || "").trim());
-}
-
-function formatDuration(sec) {
-    sec = Math.floor(Number(sec) || 0);
-    const m = Math.floor(sec / 60);
-    const s = sec % 60;
-    return m + ":" + String(s).padStart(2, "0");
-}
-
-function extractVideoId(input) {
-    const s = String(input || "");
-    let m = s.match(/[?&]v=([a-zA-Z0-9_-]{6,})/);
-    if (m) return m[1];
-    m = s.match(/youtu\.be\/([a-zA-Z0-9_-]{6,})/);
-    if (m) return m[1];
-    m = s.match(/youtube\.com\/shorts\/([a-zA-Z0-9_-]{6,})/);
-    if (m) return m[1];
-    if (/^[a-zA-Z0-9_-]{11}$/.test(s)) return s;
-    return null;
-}
-
-async function pipedGet(pathname) {
-    let lastErr = null;
-    for (let i = 0; i < PIPED_APIS.length; i++) {
-        const base = PIPED_APIS[i];
-        try {
-            const res = await axios.get(base + pathname, {
-                timeout: 25000,
-                headers: { "User-Agent": "VENOM-X" }
-            });
-            if (res.data) return res.data;
-        } catch (e) {
-            lastErr = e;
-        }
-    }
-    throw lastErr || new Error("All Piped APIs failed");
-}
-
-async function searchPiped(query) {
-    const data = await pipedGet(
-        "/search?q=" + encodeURIComponent(query) + "&filter=videos"
-    );
-    const items = data.items || data || [];
-    const list = Array.isArray(items) ? items : [];
-    const video = list.find(function (x) {
-        return x && (x.url || x.id) && (x.title || x.name);
-    });
-    if (!video) throw new Error("No results found.");
-
-    let id = video.id;
-    if (!id && video.url) {
-        id = extractVideoId(video.url) || String(video.url).replace("/watch?v=", "");
-    }
-    if (!id) throw new Error("No video id in search result.");
-
-    return {
-        id: id,
-        title: video.title || video.name || "Unknown",
-        uploader: (video.uploader && video.uploader.name) || video.uploaderName || "Unknown",
-        duration: video.duration || 0,
-        thumbnail:
-            video.thumbnail ||
-            (video.thumbnails && video.thumbnails[0] && video.thumbnails[0].url) ||
-            null,
-        url: "https://www.youtube.com/watch?v=" + id
-    };
-}
-
-async function getAudioFromPiped(videoId) {
-    const data = await pipedGet("/streams/" + encodeURIComponent(videoId));
-    const audioStreams = data.audioStreams || data.audio || [];
-    if (!audioStreams.length) {
-        throw new Error("No audio streams from Piped.");
-    }
-
-    // prefer m4a / mp4 audio, highest bitrate
-    const sorted = audioStreams.slice().sort(function (a, b) {
-        return (b.bitrate || 0) - (a.bitrate || 0);
-    });
-
-    const preferred =
-        sorted.find(function (s) {
-            return /m4a|mp4|audio\/mp4/i.test(String(s.mimeType || s.format || ""));
-        }) || sorted[0];
-
-    if (!preferred || !preferred.url) {
-        throw new Error("No usable audio URL.");
-    }
-
-    return {
-        url: preferred.url,
-        mime: preferred.mimeType || "audio/mp4",
-        title: data.title || "audio",
-        uploader: (data.uploader && data.uploader) || data.uploaderName || "Unknown",
-        duration: data.duration || 0,
-        thumbnail: data.thumbnailUrl || null
-    };
-}
-
-async function downloadBuffer(url) {
-    const res = await axios.get(url, {
-        responseType: "arraybuffer",
-        timeout: 120000,
-        maxContentLength: 50 * 1024 * 1024,
-        headers: { "User-Agent": "VENOM-X" }
-    });
-    const buf = Buffer.from(res.data);
-    if (buf.length < 1000) throw new Error("Downloaded audio is empty.");
-    return buf;
-}
+const searchCache = new Map();
 
 module.exports = {
     name: "play",
-    aliases: ["song", "music"],
+    aliases: ["apple", "applemusic", "song"],
+    category: "downloader",
+    description: "Search and download music from Apple Music",
 
-    run: async function ({ sock, from, args, reply, message }) {
-        if (!args.length) {
-            return reply(
-`╭━━〔 🎵 VENOM X PLAY 〕━━⬣
+    run: async ({ sock, from, args, reply, sender, message }) => {
 
-Usage:
-#play <song name>
-#play <youtube url>
+        const text = args.join(' ').trim();
 
-Example:
-#play joy is coming by fido
-
-╰━━━━━━━━━━━━━━━━⬣`
-            );
+        if (!text) {
+            return reply(`🎵 *Apple Music Player*\n\n` +
+                `Usage:\n` +
+                `• #play <song name>\n` +
+                `• #play <song name> <number>\n\n` +
+                `Example:\n` +
+                `#play Alone\n` +
+                `#play Alone 2`);
         }
 
-        const input = args.join(" ").trim();
+        const parts = text.split(' ');
+        const lastPart = parts[parts.length - 1];
+        const isNumber = /^\d+$/.test(lastPart);
+
+        if (isNumber) {
+            const query = parts.slice(0, -1).join(' ');
+            const num = parseInt(lastPart);
+            return await downloadSong(sock, from, sender, message, reply, query, num);
+        }
+
+        // ========== SEARCH ==========
+        await reply(`🔍 Searching Apple Music for: *${text}*...`);
 
         try {
-            await reply("🔍 Searching: *" + input + "*");
+            const searchUrl = `https://api.omegatech.app/api/Search/Applemusic?action=search&query=${encodeURIComponent(text)}`;
+            const { data: searchData } = await axios.get(searchUrl, { timeout: 30000 });
 
-            let videoId = extractVideoId(input);
-            let meta = null;
-
-            if (!videoId) {
-                meta = await searchPiped(input);
-                videoId = meta.id;
+            if (!searchData.success || !searchData.data?.results?.length) {
+                return reply(`❌ No results found for *${text}* on Apple Music.`);
             }
 
-            const audioMeta = await getAudioFromPiped(videoId);
-            const title = (meta && meta.title) || audioMeta.title || "Unknown";
-            const uploader = (meta && meta.uploader) || audioMeta.uploader || "Unknown";
-            const duration = (meta && meta.duration) || audioMeta.duration || 0;
-            const thumb =
-                (meta && meta.thumbnail) || audioMeta.thumbnail || null;
+            const results = searchData.data.results.slice(0, 8);
 
-            const caption =
-                "╭━━〔 🎵 VENOM X PLAY 〕━━⬣\n" +
-                "┃ 🎧 " + title + "\n" +
-                "┃ 👤 " + uploader + "\n" +
-                "┃ ⏱️ " + formatDuration(duration) + "\n" +
-                "┃ ⬇️ Downloading...\n" +
-                "╰━━━━━━━━━━━━━━━━⬣";
+            // Save to cache (5 minutes)
+            searchCache.set(sender, {
+                results,
+                query: text,
+                timestamp: Date.now()
+            });
 
-            if (thumb) {
+            let listText = `🎵 *Apple Music Results*\n\n`;
+            listText += `🔍 Query: *${text}*\n`;
+            listText += `📌 Found: *${results.length}* songs\n\n`;
+
+            results.forEach((song, i) => {
+                const explicit = song.explicit ? '🔞' : '✅';
+                listText += `*${i + 1}.* ${song.title}\n`;
+                listText += `    👤 ${song.artist} ${explicit}\n\n`;
+            });
+
+            listText += `📥 *To download:*\n`;
+            listText += `Type: #play ${text} <number>\n`;
+            listText += `Example: #play ${text} 1`;
+
+            // Send with cover image of first result
+            if (results[0]?.cover) {
                 try {
-                    const img = await axios.get(thumb, {
-                        responseType: "arraybuffer",
-                        timeout: 15000
-                    });
-                    await sock.sendMessage(
-                        from,
-                        { image: Buffer.from(img.data), caption: caption },
-                        { quoted: message }
-                    );
+                    await sock.sendMessage(from, {
+                        image: { url: results[0].cover },
+                        caption: listText
+                    }, { quoted: message });
+                    return;
                 } catch (e) {
-                    await reply(caption);
+                    // fallback to text only
                 }
-            } else {
-                await reply(caption);
             }
 
-            const buffer = await downloadBuffer(audioMeta.url);
+            return reply(listText);
 
-            const mime = /mp4|m4a/i.test(audioMeta.mime)
-                ? "audio/mp4"
-                : "audio/mpeg";
-
-            await sock.sendMessage(
-                from,
-                {
-                    audio: buffer,
-                    mimetype: mime,
-                    fileName: String(title).slice(0, 50) + ".mp3",
-                    ptt: false
-                },
-                { quoted: message }
-            );
-        } catch (err) {
-            console.log("PLAY ERROR:", err.message);
-            return reply(
-`╭━━〔 ❌ VENOM X PLAY 〕━━⬣
-
-Failed to play song.
-
-${String(err.message || "").slice(0, 350)}
-
-Try another song name or a direct YouTube link.
-
-╰━━━━━━━━━━━━━━━━⬣`
-            );
+        } catch (error) {
+            console.error('[APPLE SEARCH]', error.message);
+            return reply('❌ Error searching Apple Music. Please try again later.');
         }
     }
 };
+
+// ========== DOWNLOAD FUNCTION ==========
+async function downloadSong(sock, from, sender, message, reply, query, num) {
+
+    const cached = searchCache.get(sender);
+
+    if (!cached || Date.now() - cached.timestamp > 5 * 60 * 1000) {
+        searchCache.delete(sender);
+        return reply('⏰ Search results expired. Please search again with #play <song>');
+    }
+
+    const results = cached.results;
+    const selected = results[num - 1];
+
+    if (!selected) {
+        return reply(`❌ Song number *${num}* not found.\nPlease choose between 1 - ${results.length}`);
+    }
+
+    await reply(`⬇️ *Downloading...*\n\n🎵 *${selected.title}*\n👤 ${selected.artist}\n\nPlease wait...`);
+
+    try {
+        const downloadUrl = `https://api.omegatech.app/api/Search/Applemusic?action=download&query=\( {encodeURIComponent(cached.query)}&url= \){encodeURIComponent(selected.url)}`;
+        
+        const { data: downloadData } = await axios.get(downloadUrl, { timeout: 60000 });
+
+        if (!downloadData.success || !downloadData.data?.downloadUrl) {
+            throw new Error('Failed to get download link');
+        }
+
+        const audioUrl = downloadData.data.downloadUrl;
+        const title = downloadData.data.title || selected.title;
+        const artist = downloadData.data.artist || selected.artist;
+        const cover = selected.cover || null;
+
+        // Send audio with nice caption + cover as thumbnail if possible
+        await sock.sendMessage(from, {
+            audio: { url: audioUrl },
+            mimetype: 'audio/mpeg',
+            fileName: `${title}.mp3`,
+            caption: `✅ *Download Complete*\n\n🎵 *${title}*\n👤 ${artist}\n\n🔹 Powered by Apple Music`,
+            contextInfo: cover ? {
+                externalAdReply: {
+                    title: title,
+                    body: artist,
+                    mediaType: 1,
+                    thumbnailUrl: cover,
+                    sourceUrl: selected.url || 'https://music.apple.com',
+                    renderLargerThumbnail: true
+                }
+            } : undefined
+        }, { quoted: message });
+
+        searchCache.delete(sender);
+
+    } catch (error) {
+        console.error('[APPLE DOWNLOAD]', error.message);
+        return reply('❌ Failed to download the song. Please try again.');
+    }
+}
