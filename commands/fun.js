@@ -186,37 +186,43 @@ const FLIRTS = [
     "You must be a broom, because you just swept me off my feet."
 ];
 
-// Better prompts for characters
 const PROMPTS = {
-    ronaldo: "Cristiano Ronaldo face portrait, realistic photo, high quality, sharp",
-    itadori: "Yuji Itadori from Jujutsu Kaisen, anime style, detailed face, pink spiky hair, accurate",
-    zuck: "Mark Zuckerberg portrait photo, realistic, high quality",
-    elonmusk: "Elon Musk portrait photo, realistic, high quality",
-    billgates: "Bill Gates portrait photo, realistic",
-    justinbieber: "Justin Bieber portrait photo, realistic",
-    donaldtrump: "Donald Trump portrait photo, realistic",
-    joebiden: "Joe Biden portrait photo, realistic",
-    therock: "Dwayne Johnson The Rock portrait photo, realistic",
-    rihanna: "Rihanna portrait photo, realistic, beautiful",
-    taylorswift: "Taylor Swift portrait photo, realistic",
-    tomcruise: "Tom Cruise portrait photo, realistic",
-    tomholland: "Tom Holland portrait photo, realistic",
-    miakhalifa: "Mia Khalifa portrait photo",
-    johnnysins: "Johnny Sins portrait photo",
-    "tiktok-girl": "beautiful young woman, tiktok style, realistic photo, pretty face, high quality",
-    "korean-girl": "beautiful korean girl, realistic photo, pretty face, high quality",
-    "japan-girl": "beautiful japanese girl, realistic photo, pretty face",
-    "china-girl": "beautiful chinese girl, realistic photo, pretty face",
-    "hijab-girl": "beautiful girl wearing hijab, realistic photo, elegant",
-    "random-girl": "beautiful young woman portrait, realistic photo, high quality",
-    "indonesia-girl": "beautiful indonesian girl, realistic photo",
-    "malaysia-girl": "beautiful malaysian girl, realistic photo",
-    "thailand-girl": "beautiful thai girl, realistic photo",
-    "vietnam-girl": "beautiful vietnamese girl, realistic photo",
-    hentai: "anime girl, hentai style, detailed",
-    moe: "cute anime girl, moe style, detailed eyes",
-    sfw: "cute anime girl, safe for work, detailed",
-    aipic: "beautiful anime girl, highly detailed, anime style"
+    // Real People
+    ronaldo: "Cristiano Ronaldo face close-up portrait photo",
+    elonmusk: "Elon Musk face portrait photo",
+    zuck: "Mark Zuckerberg face portrait photo",
+    billgates: "Bill Gates face portrait photo",
+    donaldtrump: "Donald Trump face portrait photo",
+    joebiden: "Joe Biden face portrait photo",
+    therock: "Dwayne Johnson The Rock face portrait photo",
+    rihanna: "Rihanna face portrait photo",
+    taylorswift: "Taylor Swift face portrait photo",
+    tomcruise: "Tom Cruise face portrait photo",
+    tomholland: "Tom Holland face portrait photo",
+    justinbieber: "Justin Bieber face portrait photo",
+    miakhalifa: "Mia Khalifa face portrait photo",
+    johnnysins: "Johnny Sins face portrait photo",
+
+    // Anime
+    itadori: "Yuji Itadori Jujutsu Kaisen official art, pink spiky hair, accurate face",
+    waifu: "beautiful anime waifu, detailed",
+    neko: "anime neko girl, cat ears",
+    moe: "cute moe anime girl",
+    hentai: "anime girl hentai style",
+    sfw: "cute safe anime girl",
+    aipic: "beautiful anime girl highly detailed",
+
+    // Girls
+    "tiktok-girl": "beautiful young woman tiktok style portrait photo",
+    "korean-girl": "beautiful korean girl portrait photo",
+    "japan-girl": "beautiful japanese girl portrait photo",
+    "china-girl": "beautiful chinese girl portrait photo",
+    "hijab-girl": "beautiful girl wearing hijab portrait photo",
+    "random-girl": "beautiful young woman portrait photo",
+    "indonesia-girl": "beautiful indonesian girl portrait photo",
+    "malaysia-girl": "beautiful malaysian girl portrait photo",
+    "thailand-girl": "beautiful thai girl portrait photo",
+    "vietnam-girl": "beautiful vietnamese girl portrait photo"
 };
 
 const IMAGE_CMDS = [
@@ -224,7 +230,7 @@ const IMAGE_CMDS = [
     "johnnysins", "miakhalifa", "therock", "rihanna", "taylorswift", "tomcruise", "tomholland",
     "chinagirl", "bluearchive", "boypic", "carimage", "random-girl", "hijab-girl",
     "indonesia-girl", "japan-girl", "korean-girl", "malaysia-girl", "profile-pictures",
-    "thailand-girl", "tiktok-girl", "vietnam-girl", "aipic", "hentai", "moe", "sfw", "dog", "meme"
+    "thailand-girl", "tiktok-girl", "vietnam-girl", "aipic", "hentai", "moe", "sfw", "dog", "meme", "waifu", "neko"
 ];
 
 const FUN_CMDS = IMAGE_CMDS.concat([
@@ -295,7 +301,7 @@ module.exports = {
         if (cmd === "advice" || cmd === "inspire") return reply("💡 Stay consistent. Small steps win.");
         if (cmd === "wouldyou") return reply("🤔 Would you rather be rich without love, or loved without money?");
         if (cmd === "rate") return reply("📊 Rate: " + Math.floor(Math.random() * 101) + "/100");
-        if (cmd === "ship") return reply("💘 Ship: " + Math.floor(Math.random() * 101) + "%");
+        if (cmd === "ship "ship") return reply("💘 Ship: " + Math.floor(Math.random() * 101) + "%");
 
         if (cmd === "fun") {
             const m = pick(["truth", "dare", "roast", "compliment", "flirt", "rate", "ship"]);
@@ -343,10 +349,14 @@ module.exports = {
                 }
 
                 const prompt = PROMPTS[cmd] || (cmd.replace(/-/g, " ") + " portrait, high quality");
+                const isReal = /ronaldo|elon|musk|trump|biden|zuck|rock|rihanna|taylor|cruise|holland|bieber|gates|khalifa|sins/i.test(cmd);
+                const isAnime = /itadori|waifu|neko|hentai|moe|sfw|aipic/i.test(cmd);
 
                 const buf = await getImageBuffer({
                     prompt: prompt,
-                    nekoType: ["hentai", "moe", "sfw", "aipic"].includes(cmd) ? (cmd === "hentai" ? "hentai" : "neko") : null
+                    real: isReal,
+                    anime: isAnime,
+                    nekoType: cmd === "hentai" ? "hentai" : "neko"
                 });
 
                 await sock.sendMessage(from, {

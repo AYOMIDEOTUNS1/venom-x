@@ -9,18 +9,15 @@ let menuImages = [];
 function getSettings() {
     try {
         return JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf8"));
-    } catch (e) {
+    } catch {
         return {};
     }
 }
 
 function loadMenuImages() {
     try {
-        if (!fs.existsSync(menuImageDir)) {
-            menuImages = [];
-            return;
-        }
-        menuImages = fs.readdirSync(menuImageDir)
+        if (!fs.existsSync(menuImageDir)) return (menuImages = []);
+        menuImages fs.readdirSync(menuImageDir)
             .filter(f => /\.(jpg|jpeg|png|webp)$/i.test(f))
             .map(f => path.join(menuImageDir, f));
     } catch {
@@ -36,14 +33,16 @@ function pickRandomImage() {
 
 function getTimeInfo() {
     const now = new Date();
-    const time = new Intl.DateTimeFormat("en-NG", { timeZone: "Africa/Lagos", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true }).format(now);
+    const time = new Intl.DateTimeFormat("en-NG", { timeZone: "Africa/Lagos", hour: "2-digit", minute: "2-digit", hour12: true }).format(now);
     const day = new Intl.DateTimeFormat("en-NG", { timeZone: "Africa/Lagos", weekday: "long" }).format(now);
-    const date = new Intl.DateTimeFormat("en-NG", { timeZone: "Africa/Lagos", day: "2-digit", month: "long", year: "numeric" }).format(now);
+    const date = new Intl.DateTimeFormat("en-NG", { timeZone: "Africa/Lagos", day: "2-digit", month: "short", year: "numeric" }).format(now);
     const hour = Number(new Intl.DateTimeFormat("en-NG", { timeZone: "Africa/Lagos", hour: "numeric", hour12: false }).format(now));
-    let greeting = "Good night";
-    if (hour >= 5 && hour < 12) greeting = "Good morning";
-    else if (hour >= 12 && hour < 17) greeting = "Good afternoon";
-    else if (hour >= 17 && hour < 22) greeting = "Good evening";
+    
+    let greeting = "Good Night";
+    if (hour >= 5 && hour < 12) greeting = "Good Morning";
+    else if (hour >= 12 && hour < 17) greeting = "Good Afternoon";
+    else if (hour >= 17 && hour < 22) greeting = "Good Evening";
+    
     return { time, day, date, greeting };
 }
 
@@ -54,9 +53,10 @@ function cleanName(name) {
 function getCommandRegistry(sock) {
     const registry = typeof sock.getCommands === "function" ? sock.getCommands() : null;
     if (registry instanceof Map && registry.size) return registry;
+
     const fallback = new Map();
     try {
-        const files = fs.readdirSync(__dirname).filter(f => f.endsWith(".js") && f !== "menu.js");
+        const files = fs.readdirSync(path.join(__dirname)).filter(f => f.endsWith(".js") && f !== "menu.js");
         for (const file of files) {
             try {
                 const full = path.join(__dirname, file);
@@ -82,24 +82,23 @@ function buildCommands(registry) {
 }
 
 const categories = {
-    "🧠 AI": ["ai", "ask", "venomai", "gpt", "vision", "imagine", "reimagine", "translate", "rewrite", "summarize", "code", "fixcode", "explain", "nano", "nanopro"],
-    "🎨 IMAGE": ["hd", "tohd", "hdify", "sticker", "s", "toimg", "toimage", "cropsticker", "getpp", "stickerpack", "take", "steal", "takeall", "animepic", "meme", "wallpaper", "blur", "wanted", "emojimix", "removebg"],
-    "🔞 NSFW": ["xv", "xvphoto", "xvpics", "animepic", "ass", "boobs", "hentai", "waifu", "neko", "pussy"],
-    "📥 DOWNLOADS": ["tiktok", "tt", "ytmp3", "ytmp4", "ig", "fb", "play", "spotify", "mediafire", "gitclone", "xv", "vv", "vv2", "tiktokboost", "ttboost"],
-    "🎵 MUSIC": ["play", "song", "lyrics", "shazam", "bass", "ytmp3"],
-    "👥 GROUP": ["tagall", "hidetag", "kick", "add", "promote", "demote", "warn", "warnings", "delwarn", "resetwarn", "antilink", "antichannelmessage", "antistatustag", "welcome", "goodbye", "open", "close", "groupinfo", "status2", "gcstatus", "setname", "setdesc", "linkgroup", "revoke"],
-    "💰 ECONOMY": ["bal", "daily", "weekly", "monthly", "work", "deposit", "withdraw", "pay", "rob", "jail", "bail", "escape", "economy", "bank", "bankupgrade", "market", "aza"],
-    "🎮 GAMES": ["coinflip", "slots", "guess", "blackjack", "dice", "rps", "battle", "duel", "accept", "games", "stats", "lb", "glb"],
-    "✨ ANIME MENU": ["anime", "manga", "rwaifu", "waifu", "neko", "shinobu", "megumin", "itadori", "animekill", "animelick", "animebite", "animeglomp", "animehappy", "animedance", "animecringe", "animehighfive", "animepoke", "animewink", "animesmile", "animesmug", "animewlp", "animesearch", "animeavatar", "cry", "kill", "hug", "happy", "dance", "handhold", "highfive", "slap", "kiss", "blush", "bite", "cuddle", "bonk", "pat", "nom", "furbrat"],
-    "🔥 ANIME LOVERS": ["animelovers", "animecharacters", "animesearch", "chiho", "doraemon", "elaina", "emilia", "erza", "exo", "femdom", "freefire", "gamewallpaper", "glasses", "gremory", "hacker", "cosplay", "cyber", "akiyama", "ana", "art", "asuna", "ayuzawa", "boruto", "bts", "cecan", "deidara", "hestia", "husbu", "inori", "islamic", "isuzu", "itachi", "itori", "jennie", "jiso", "justina", "kaga", "kagura", "kakashi", "kaori", "keneki", "kotori", "kurumi", "loli", "madara", "megumin", "mikasa", "miku", "minato", "mountain", "naruto", "nekonime", "nezuko", "onepiece", "programming", "randblackpink", "rize", "rose", "ryujin", "sakura", "sasuke", "sagiri", "satanic", "space", "technology", "tsunade", "waifu", "wallhp", "wallml", "wallmlnime", "yotsuba", "yuki", "yulibocil", "yumeko"],
-    "😝 FUN MENU": ["fun", "ronaldo", "zuck", "billgates", "elonmusk", "justinbieber", "donaldtrump", "joebiden", "johnnysins", "miakhalifa", "therock", "rihanna", "taylorswift", "tomcruise", "tomholland", "wouldyou", "flirt", "moe", "sfw", "cartoonify", "story", "rate", "ship", "truthdare", "compliment", "roast", "trivia", "joke", "truth", "dare", "meme", "advice", "urban", "moviequote", "triviafact", "inspire", "ascii", "progquote", "dadjoke", "prog", "quotememe", "funfact", "panda", "bird", "koala", "fox", "dog", "fact", "paptt", "chinagirl", "bluearchive", "boypic", "carimage", "random-girl", "hijab-girl", "indonesia-girl", "japan-girl", "korean-girl", "malaysia-girl", "profile-pictures", "thailand-girl", "tiktok-girl", "vietnam-girl", "aipic", "hentai"],
-    "⚙️ UTILITY": ["ping", "alive", "menu", "owner", "profile", "vcf", "delete", "info", "save", "vv", "vv2", "sleep", "up", "refresh", "pair", "weather", "calc", "qr", "tts", "short", "poll", "getjid", "reactch"],
-    "👑 OWNER": ["public", "private", "shutdown", "restart", "backup", "broadcast", "reset", "update", "block", "unblock", "sleep", "up", "refresh", "pair", "sudo"]
+    "🧠  AI": ["ai", "ask", "venomai", "gpt", "vision", "imagine", "reimagine", "translate", "rewrite", "summarize", "code", "fixcode", "explain", "nano", "nanopro"],
+    "🎨  IMAGE": ["hd", "tohd", "hdify", "sticker", "s", "toimg", "toimage", "cropsticker", "getpp", "stickerpack", "take", "steal", "takeall", "animepic", "meme", "wallpaper", "blur", "wanted", "emojimix", "removebg"],
+    "🔞  NSFW": ["xv", "xvphoto", "xvpics", "ass", "boobs", "hentai", "waifu", "neko", "pussy"],
+    "📥  DOWNLOADS": ["tiktok", "tt", "ytmp3", "ytmp4", "ig", "fb", "play", "spotify", "mediafire", "gitclone", "vv", "vv2", "tiktokboost", "ttboost"],
+    "🎵  MUSIC": ["play", "song", "lyrics", "shazam", "bass"],
+    "👥  GROUP": ["tagall", "hidetag", "kick", "add", "promote", "demote", "warn", "warnings", "delwarn", "resetwarn", "antilink", "welcome", "goodbye", "open", "close", "groupinfo", "status2", "gcstatus", "setname", "setdesc", "linkgroup", "revoke"],
+    "💰  ECONOMY": ["bal", "daily", "weekly", "monthly", "work", "deposit", "withdraw", "pay", "rob", "jail", "bail", "escape", "economy", "bank", "bankupgrade", "market", "aza"],
+    "🎮  GAMES": ["coinflip", "slots", "guess", "blackjack", "dice", "rps", "battle", "duel", "accept", "games", "stats", "lb", "glb"],
+    "✨  ANIME": ["anime", "manga", "rwaifu", "waifu", "neko", "itadori", "shinobu", "megumin", "hug", "kiss", "pat", "slap", "cry", "dance", "kill", "cuddle", "bonk", "blush", "bite"],
+    "😝  FUN": ["fun", "truth", "dare", "truthdare", "roast", "compliment", "flirt", "joke", "rate", "ship", "wouldyou", "ronaldo", "elonmusk", "therock", "korean-girl", "japan-girl", "tiktok-girl", "random-girl", "hijab-girl"],
+    "⚙️  UTILITY": ["ping", "alive", "menu", "owner", "profile", "weather", "calc", "qr", "tts", "short", "poll", "getjid", "reactch", "info"],
+    "👑  OWNER": ["public", "private", "shutdown", "restart", "backup", "broadcast", "update", "block", "unblock", "sudo"]
 };
 
 function buildCategory(title, names, prefix) {
-    const rows = names.map(name => `┃ \( {prefix} \){name}`);
-    return `╭━━〔 \( {title} 〕━━⬣\n \){rows.join("\n")}\n╰━━━━━━━━━━━━━━━━⬣`;
+    const rows = names.map(n => `│  \( {prefix} \){n}`).join("\n");
+    return `┌───『 \( {title} 』\n \){rows}\n└──────────────`;
 }
 
 module.exports = {
@@ -109,41 +108,40 @@ module.exports = {
     run: async function ({ sock, from, message, args, sender }) {
         const settings = getSettings();
         const prefix = settings.prefix || "#";
-        const ownerName = settings.ownerName || "AYOMIDE";
         const botName = settings.botName || "VENOM X";
+        const ownerName = settings.ownerName || "AYOMIDE";
         const mode = String(settings.mode || "public").toUpperCase();
         const timeInfo = getTimeInfo();
         const registry = getCommandRegistry(sock);
         const commands = buildCommands(registry);
-        const totalCommands = commands.size;
+        const total = commands.size;
         const pushName = message.pushName || "User";
         const arg = (args[0] || "").toLowerCase();
 
-        // ==================== SMALL MENU (UNTOUCHED) ====================
+        // ==================== SMALL MENU ====================
         if (arg !== "all" && arg !== "full") {
             const smallMenu = 
-`╭━━━「 🌀 *${botName}* 🌀 」━━━
-┃
-┃  👋 Hello, *${pushName}*
-┃  ✅ *${botName}* is active & ready.
-┃  ⚡ *Commands:* ${totalCommands}+
-┃
-┃  ◈ *${prefix}menu all*  → All commands
-┃  ◈ *${prefix}help*     → Command guide
-┃  ◈ *${prefix}ping*     → Response time
-┃  ◈ *${prefix}play*     → Music player
-┃  ◈ *${prefix}ai*       → AI assistant
-┃  ◈ *${prefix}nano*     → AI Image Gen
-┃
-╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+`╭─────────────────────
+│  🌀 *${botName}* 🌀
+├─────────────────────
+│  👋 Hello, *${pushName}*
+│  ✅ Bot is Online
+│  ⚡ Commands: *${total}+*
+├─────────────────────
+│  ◈ ${prefix}menu all   → Full Menu
+│  ◈ ${prefix}ping      → Speed
+│  ◈ ${prefix}play      → Music
+│  ◈ ${prefix}ai        → AI Chat
+│  ◈ ${prefix}nano      → AI Image
+│  ◈ ${prefix}antilink  → Protect
+╰─────────────────────
+> ⚡ Powered by VENOM X`;
 
-> _Powered by VENOM X_ ⚡`;
-
-            const selectedImage = pickRandomImage();
+            const img = pickRandomImage();
             try {
-                if (selectedImage && fs.existsSync(selectedImage)) {
+                if (img && fs.existsSync(img)) {
                     await sock.sendMessage(from, {
-                        image: fs.readFileSync(selectedImage),
+                        image: fs.readFileSync(img),
                         caption: smallMenu
                     }, { quoted: message });
                 } else {
@@ -155,52 +153,46 @@ module.exports = {
             return;
         }
 
-        // ==================== FULL MENU ====================
-        const sections = Object.entries(categories).map(([title, names]) =>
-            buildCategory(title, names, prefix)
-        );
+// ==================== FULL MENU ====================
+        const sections = Object.entries(categories)
+            .map(([title, names]) => buildCategory(title, names, prefix))
+            .join("\n\n");
 
-        const menuText =
-`╭━━〔 🤖 ${botName} MENU 〕━━⬣
-┃ 👋 ${timeInfo.greeting}, ${ownerName}!
-┃
-┃ 👑 Owner : ${ownerName}
-┃ 🌍 Mode : ${mode}
-┃ ⚡ Prefix : ${prefix}
-┃ 🤖 Version : ${settings.version || "3.0.0"}
-┃ 🚀 Status : ONLINE
-┃ 📦 Commands : ${totalCommands}
-┃
-┃ 🕐 Time : ${timeInfo.time}
-┃ 📅 Day : ${timeInfo.day}
-┃ 📆 Date : ${timeInfo.date}
-╰━━━━━━━━━━━━━━━━⬣
+        const fullMenu = 
+`╭──────────────────────────
+│  🌀 *${botName.toUpperCase()}* MENU
+├──────────────────────────
+│  👋 \( {timeInfo.greeting}, * \){ownerName}*
+│
+│  👑 Owner    : ${ownerName}
+│  🌍 Mode     : ${mode}
+│  ⚡ Prefix   : ${prefix}
+│  📦 Commands : ${total}
+│  🕐 Time     : ${timeInfo.time}
+│  📅 Date     : ${timeInfo.day}, ${timeInfo.date}
+╰──────────────────────────
 
-${sections.join("\n\n")}
+${sections}
 
-╭━━〔 📖 HELP 〕━━⬣
-┃ 💡 ${prefix}info <command>
-┃ 💡 ${prefix}menu
-┃ 💡 ${prefix}menu all
-╰━━━━━━━━━━━━━━━━⬣
+╭──────────────────────────
+│  💡 ${prefix}menu       → Small menu
+│  💡 ${prefix}menu all   → This menu
+│  💡 ${prefix}info <cmd> → Command help
+╰──────────────────────────
+> ⚡ Powered by VENOM X`;
 
-╭━━〔 💀 ${botName} 〕━━⬣
-┃ 📦 Total Commands : ${totalCommands}
-┃ Powered By VENOM X
-╰━━━━━━━━━━━━━━━━⬣`;
-
-        const selectedImage = pickRandomImage();
+        const img = pickRandomImage();
         try {
-            if (selectedImage && fs.existsSync(selectedImage)) {
+            if (img && fs.existsSync(img)) {
                 await sock.sendMessage(from, {
-                    image: fs.readFileSync(selectedImage),
-                    caption: menuText
+                    image: fs.readFileSync(img),
+                    caption: fullMenu
                 }, { quoted: message });
             } else {
-                await sock.sendMessage(from, { text: menuText }, { quoted: message });
+                await sock.sendMessage(from, { text: fullMenu }, { quoted: message });
             }
         } catch {
-            await sock.sendMessage(from, { text: menuText }, { quoted: message }).catch(() => {});
+            await sock.sendMessage(from, { text: fullMenu }, { quoted: message }).catch(() => {});
         }
     }
 };

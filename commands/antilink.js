@@ -1,109 +1,98 @@
 const fs = require("fs");
 const path = require("path");
 
-const dbFile = path.join(
-    __dirname,
-    "..",
-    "database",
-    "antilink.json"
-);
+const dbFile = path.join(__dirname, "..", "database", "antilink.json");
 
 function load() {
     const dir = path.dirname(dbFile);
-
-    if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
-
-    if (!fs.existsSync(dbFile)) {
-        fs.writeFileSync(dbFile, "{}");
-    }
-
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    if (!fs.existsSync(dbFile)) fs.writeFileSync(dbFile, "{}");
     try {
         const raw = fs.readFileSync(dbFile, "utf8");
-
-        return raw.trim()
-            ? JSON.parse(raw)
-            : {};
+        return raw.trim() ? JSON.parse(raw) : {};
     } catch {
         return {};
     }
 }
 
 function save(db) {
-    fs.writeFileSync(
-        dbFile,
-        JSON.stringify(db, null, 2)
-    );
+    fs.writeFileSync(dbFile, JSON.stringify(db, null, 2));
 }
 
 module.exports = {
     name: "antilink",
-
     aliases: ["antilink"],
 
     run: async ({ from, reply, args }) => {
-
         if (!from.endsWith("@g.us")) {
-            return reply(
-                "❌ This command can only be used in groups."
-            );
+            return reply("❌ This command can only be used in groups.");
         }
 
         const db = load();
-
-        const mode =
-            String(args?.[0] || "")
-                .toLowerCase();
+        const mode = String(args?.[0] || "").toLowerCase();
 
         if (mode === "on") {
-
-            db[from] = true;
-
+            db[from] = { enabled: true, action: "warn" }; // warn by default
             save(db);
-
-            return reply(
-`╭━━〔 🛡️ VENOM X ANTILINK 〕━━⬣
+            return reply(`╭━━〔 🛡️ ANTILINK 〕━━⬣
 ┃
-┃ ✅ Antilink enabled
+┃ ✅ Antilink *enabled*
 ┃
-┃ 🔗 WhatsApp invite links
-┃ will be deleted.
+┃ 🔗 Links will be deleted
+┃ ⚠️ Action: Warning system
 ┃
-┃ ⚠️ Warning System
-┃ 1/3 → Warning
-┃ 2/3 → Warning
-┃ 3/3 → Kick
+┃ 1st link → Warning
+┃ 2nd link → Warning
+┃ 3rd link → Kick
 ┃
-╰━━━━━━━━━━━━━━━━⬣`
-            );
+╰━━━━━━━━━━━━━━━━⬣`);
         }
 
         if (mode === "off") {
-
-            db[from] = false;
-
+            db[from] = { enabled: false };
             save(db);
-
-            return reply(
-`╭━━〔 🛡️ VENOM X ANTILINK 〕━━⬣
+            return reply(`╭━━〔 🛡️ ANTILINK 〕━━⬣
 ┃
-┃ ❌ Antilink disabled
+┃ ❌ Antilink *disabled*
 ┃
-┃ 🔗 Links are now allowed.
-╰━━━━━━━━━━━━━━━━⬣`
-            );
+┃ Links are now allowed.
+╰━━━━━━━━━━━━━━━━⬣`);
         }
 
-        return reply(
-`╭━━〔 🛡️ VENOM X ANTILINK 〕━━⬣
+        if (mode === "kick") {
+            db[from] = { enabled: true, action: "kick" };
+            save(db);
+            return reply(`╭━━〔 🛡️ ANTILINK 〕━━⬣
+┃
+┃ ✅ Antilink enabled
+┃ 🚪 Action set to: *Instant Kick*
+╰━━━━━━━━━━━━━━━━⬣`);
+        }
+
+        if (mode === "warn") {
+            db[from] = { enabled: true, action: "warn" };
+            save(db);
+            return reply(`╭━━〔 🛡️ ANTILINK 〕━━⬣
+┃
+┃ ✅ Antilink enabled
+┃ ⚠️ Action set to: *Warning System*
+╰━━━━━━━━━━━━━━━━⬣`);
+        }
+
+        const status = db[from]?.enabled ? "ON" : "OFF";
+        const action = db[from]?.action || "warn";
+
+        return reply(`╭━━〔 🛡️ ANTILINK 〕━━⬣
+┃
+┃ Status : *${status}*
+┃ Action : *${action}*
 ┃
 ┃ Usage:
-┃ .antilink on
-┃ .antilink off
+┃ #antilink on
+┃ #antilink off
+┃ #antilink warn
+┃ #antilink kick
 ┃
-┃ ⚠️ 3 warnings = kick
-╰━━━━━━━━━━━━━━━━⬣`
-        );
+╰━━━━━━━━━━━━━━━━⬣`);
     }
 };
