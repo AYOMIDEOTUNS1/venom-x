@@ -50,8 +50,6 @@ module.exports = async function antiLinkHandler(sock, msg) {
 
         const db = load();
         const groupData = db[from];
-
-        // Support both old format (true/false) and new format ({enabled, action})
         const isEnabled = groupData === true || groupData?.enabled === true;
         if (!isEnabled) return;
 
@@ -60,7 +58,6 @@ module.exports = async function antiLinkHandler(sock, msg) {
 
         const sender = msg.key.participant || msg.key.remoteJid;
 
-        // Get group metadata to check admins
         let metadata;
         try {
             metadata = await sock.groupMetadata(from);
@@ -70,33 +67,23 @@ module.exports = async function antiLinkHandler(sock, msg) {
 
         const participants = metadata.participants || [];
         const senderData = participants.find(p => 
-            p.id === sender || 
-            p.id?.split(":")[0] === sender?.split(":")[0]
+            p.id === sender || p.id?.split(":")[0] === sender?.split(":")[0]
         );
 
-        // Don't punish admins
-        if (senderData?.admin === "admin" || senderData?.admin === "superadmin") {
-            return;
-        }
+        if (senderData?.admin === "admin" || senderData?.admin === "superadmin") return;
 
-        // Check if bot is admin
         const botId = sock.user?.id;
         const botData = participants.find(p => 
-            p.id === botId || 
-            p.id?.split(":")[0] === botId?.split(":")[0]
+            p.id === botId || p.id?.split(":")[0] === botId?.split(":")[0]
         );
         const isBotAdmin = botData?.admin === "admin" || botData?.admin === "superadmin";
 
-        // Delete the message
         try {
             await sock.sendMessage(from, { delete: msg.key });
-        } catch (e) {
-            console.log("[Antilink] Failed to delete message:", e.message);
-        }
+        } catch (e) {}
 
         const action = (typeof groupData === "object" && groupData.action) ? groupData.action : "warn";
 
-        // ========== INSTANT KICK MODE ==========
         if (action === "kick") {
             if (!isBotAdmin) {
                 await sock.sendMessage(from, {
@@ -121,11 +108,9 @@ module.exports = async function antiLinkHandler(sock, msg) {
             return;
         }
 
-        // ========== WARNING SYSTEM ==========
         const result = warningEngine.addWarning(from, sender, "Sending link / invite");
 
         if (result.count >= warningEngine.MAX_WARNINGS) {
-            // Reset warnings and kick
             warningEngine.resetWarnings(from, sender);
 
             if (isBotAdmin) {
@@ -150,7 +135,7 @@ module.exports = async function antiLinkHandler(sock, msg) {
         } else {
             const left = warningEngine.MAX_WARNINGS - result.count;
             await sock.sendMessage(from, {
-                text: `⚠️ *Link Detected!*\n\n👤 @\( {normalize(sender)}\n⚠️ Warning: * \){result.count}/\( {warningEngine.MAX_WARNINGS}*\n📝 Reason: Sending link\n\n \){left === 1 ? "🚨 Next warning = Kick" : `You have ${left} warning(s) left.`}`,
+                text: `⚠️ *Link Detected!*\n\n👤 @\( {normalize(sender)}\n⚠️ Warning: * \){result.count}/\( {warningEngine.MAX_WARNINGS}*\n📝 Reason: Sending link\n\n \){left === 1 ? "🚨 Next warning = Kick" : "You have " + left + " warning(s) left."}`,
                 mentions: [sender]
             });
         }

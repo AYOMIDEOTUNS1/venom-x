@@ -301,7 +301,7 @@ module.exports = {
         if (cmd === "advice" || cmd === "inspire") return reply("💡 Stay consistent. Small steps win.");
         if (cmd === "wouldyou") return reply("🤔 Would you rather be rich without love, or loved without money?");
         if (cmd === "rate") return reply("📊 Rate: " + Math.floor(Math.random() * 101) + "/100");
-        if (cmd === "ship "ship") return reply("💘 Ship: " + Math.floor(Math.random() * 101) + "%");
+        if (cmd === "ship") return reply("💘 Ship: " + Math.floor(Math.random() * 101) + "%");
 
         if (cmd === "fun") {
             const m = pick(["truth", "dare", "roast", "compliment", "flirt", "rate", "ship"]);

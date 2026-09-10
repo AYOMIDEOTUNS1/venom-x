@@ -16,8 +16,11 @@ function getSettings() {
 
 function loadMenuImages() {
     try {
-        if (!fs.existsSync(menuImageDir)) return (menuImages = []);
-        menuImages fs.readdirSync(menuImageDir)
+        if (!fs.existsSync(menuImageDir)) {
+            menuImages = [];
+            return;
+        }
+        menuImages = fs.readdirSync(menuImageDir)
             .filter(f => /\.(jpg|jpeg|png|webp)$/i.test(f))
             .map(f => path.join(menuImageDir, f));
     } catch {
@@ -56,7 +59,7 @@ function getCommandRegistry(sock) {
 
     const fallback = new Map();
     try {
-        const files = fs.readdirSync(path.join(__dirname)).filter(f => f.endsWith(".js") && f !== "menu.js");
+        const files = fs.readdirSync(__dirname).filter(f => f.endsWith(".js") && f !== "menu.js");
         for (const file of files) {
             try {
                 const full = path.join(__dirname, file);
@@ -91,7 +94,7 @@ const categories = {
     "💰  ECONOMY": ["bal", "daily", "weekly", "monthly", "work", "deposit", "withdraw", "pay", "rob", "jail", "bail", "escape", "economy", "bank", "bankupgrade", "market", "aza"],
     "🎮  GAMES": ["coinflip", "slots", "guess", "blackjack", "dice", "rps", "battle", "duel", "accept", "games", "stats", "lb", "glb"],
     "✨  ANIME": ["anime", "manga", "rwaifu", "waifu", "neko", "itadori", "shinobu", "megumin", "hug", "kiss", "pat", "slap", "cry", "dance", "kill", "cuddle", "bonk", "blush", "bite"],
-    "😝  FUN": ["fun", "truth", "dare", "truthdare", "roast", "compliment", "flirt", "joke", "rate", "ship", "wouldyou", "ronaldo", "elonmusk", "therock", "korean-girl", "japan-girl", "tiktok-girl", "random-girl", "hijab-girl"],
+    "😝  FUN": ["fun", "truth", "dare", "truthdare", "roast", "compliment", "flirt", "joke", "rate", "ship", "wouldyou", "ronaldo", "elonmusk", "therock", "korean-girl", "japan-girl", "tiktok-girl", "random-girl", "hijab-girl", "hack"],
     "⚙️  UTILITY": ["ping", "alive", "menu", "owner", "profile", "weather", "calc", "qr", "tts", "short", "poll", "getjid", "reactch", "info"],
     "👑  OWNER": ["public", "private", "shutdown", "restart", "backup", "broadcast", "update", "block", "unblock", "sudo"]
 };
@@ -118,7 +121,6 @@ module.exports = {
         const pushName = message.pushName || "User";
         const arg = (args[0] || "").toLowerCase();
 
-        // ==================== SMALL MENU ====================
         if (arg !== "all" && arg !== "full") {
             const smallMenu = 
 `╭─────────────────────
@@ -153,7 +155,6 @@ module.exports = {
             return;
         }
 
-// ==================== FULL MENU ====================
         const sections = Object.entries(categories)
             .map(([title, names]) => buildCategory(title, names, prefix))
             .join("\n\n");
