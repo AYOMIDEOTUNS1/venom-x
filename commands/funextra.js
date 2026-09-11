@@ -46,7 +46,6 @@ const quotes = [
 ];
 
 const animeQuotes = [
-    // General Anime
     "「 People die when they are killed. 」 – Shirou Emiya",
     "「 The world isn’t perfect. But it’s there for us, trying the best it can. 」 – Roy Mustang",
     "「 If you don’t take risks, you can’t create a future. 」 – Monkey D. Luffy",
@@ -57,8 +56,6 @@ const animeQuotes = [
     "「 Power comes in response to a need, not a desire. 」 – Goku",
     "「 A pupil should surpass their teacher. 」 – Kakashi Hatake",
     "「 Those who cannot acknowledge themselves will eventually fail. 」 – Itachi Uchiha",
-
-    // Jujutsu Kaisen
     "「 Throughout Heaven and Earth, I alone am the honored one. 」 – Satoru Gojo",
     "「 I don't want to regret the way I live. 」 – Yuji Itadori",
     "「 The only thing left behind is the results. 」 – Kento Nanami",
@@ -141,6 +138,7 @@ module.exports = {
                           percent >= 70 ? "Really good chemistry 🔥" :
                           percent >= 50 ? "There's potential 😏" :
                           percent >= 30 ? "Just friends... maybe 😅" : "Stay away from each other 💀";
+
             return reply(`💘 *Ship Result*\n\n@\( {users[0].split("@")[0]} ❤️ @ \){users[1].split("@")[0]}\n\n*Compatibility: \( {percent}%*\n \){comment}`, {
                 mentions: users
             });
@@ -163,9 +161,11 @@ module.exports = {
             const meta = await sock.groupMetadata(from);
             const members = meta.participants.map(p => p.id);
             if (members.length < 2) return reply("Not enough members.");
+
             let a = pick(members);
             let b = pick(members);
             while (a === b) b = pick(members);
+
             return reply(`💑 *Couple of the Day*\n\n@\( {a.split("@")[0]} ❤️ @ \){b.split("@")[0]}\n\nCongratulations 💕`, {
                 mentions: [a, b]
             });

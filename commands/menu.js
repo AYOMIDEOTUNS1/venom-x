@@ -1,12 +1,10 @@
 const fs = require("fs");
 const path = require("path");
-const os = require("os");
 
 const SETTINGS_FILE = path.join(__dirname, "..", "settings.json");
 const menuImageDir = path.join(__dirname, "../media/menu");
 
 let menuImages = [];
-const startTime = Date.now();
 
 function getSettings() {
     try {
@@ -18,7 +16,10 @@ function getSettings() {
 
 function loadMenuImages() {
     try {
-        if (!fs.existsSync(menuImageDir)) return (menuImages = []);
+        if (!fs.existsSync(menuImageDir)) {
+            menuImages = [];
+            return;
+        }
         menuImages = fs.readdirSync(menuImageDir)
             .filter(f => /\.(jpg|jpeg|png|webp)$/i.test(f))
             .map(f => path.join(menuImageDir, f));
@@ -33,23 +34,17 @@ function pickRandomImage() {
     return menuImages.length ? menuImages[Math.floor(Math.random() * menuImages.length)] : null;
 }
 
-function formatUptime(ms) {
-    const sec = Math.floor(ms / 1000);
-    const hours = Math.floor(sec / 3600);
-    const mins = Math.floor((sec % 3600) / 60);
-    const secs = sec % 60;
-    return `${hours} hours, ${mins} minutes, ${secs} seconds`;
-}
-
 function getTimeInfo() {
     const now = new Date();
-    const time = new Intl.DateTimeFormat("en-NG", { timeZone: "Africa/Lagos", hour: "2-digit", minute: "2-digit", hour12: true }).format(now);
+    const time = new Intl.DateTimeFormat("en-NG", { timeZone: "Africa/Lagos", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true }).format(now);
+    const day = new Intl.DateTimeFormat("en-NG", { timeZone: "Africa/Lagos", weekday: "long" }).format(now);
+    const date = new Intl.DateTimeFormat("en-NG", { timeZone: "Africa/Lagos", day: "2-digit", month: "long", year: "numeric" }).format(now);
     const hour = Number(new Intl.DateTimeFormat("en-NG", { timeZone: "Africa/Lagos", hour: "numeric", hour12: false }).format(now));
-    let greeting = "Good Night";
-    if (hour >= 5 && hour < 12) greeting = "Good Morning";
-    else if (hour >= 12 && hour < 17) greeting = "Good Afternoon";
-    else if (hour >= 17 && hour < 22) greeting = "Good Evening";
-    return { time, greeting };
+    let greeting = "Good night";
+    if (hour >= 5 && hour < 12) greeting = "Good morning";
+    else if (hour >= 12 && hour < 17) greeting = "Good afternoon";
+    else if (hour >= 17 && hour < 22) greeting = "Good evening";
+    return { time, day, date, greeting };
 }
 
 function cleanName(name) {
@@ -74,6 +69,38 @@ function getCommandRegistry(sock) {
     return fallback;
 }
 
+function buildCommands(registry) {
+    const commands = new Map();
+    const seen = new Set();
+    registry.forEach((command, key) => {
+        if (!command || seen.has(command)) return;
+        seen.add(command);
+        const name = cleanName(command.name || key);
+        if (name) commands.set(name, command);
+    });
+    return commands;
+}
+
+const categories = {
+    "🧠 AI": ["ai", "ask", "venomai", "gpt", "translate", "rewrite", "summarize", "code", "fixcode", "explain", "nano", "nanopro"],
+    "🎨 IMAGE": ["hd", "tohd", "hdify", "sticker", "s", "toimg", "toimage", "cropsticker", "getpp", "stickerpack", "take", "steal", "takeall", "animepic", "meme", "wallpaper", "blur", "wanted", "emojimix", "removebg", "pint"],
+    "🔞 NSFW": ["xv", "xvphoto", "xvpics", "ass", "boobs", "hentai", "waifu", "neko", "pussy"],
+    "📥 DOWNLOADS": ["tiktok", "tt", "ytmp3", "ytmp4", "ig", "fb", "play", "spotify", "mediafire", "gitclone", "vv", "vv2", "tiktokboost", "ttboost"],
+    "🎵 MUSIC": ["play", "song", "lyrics", "shazam", "bass"],
+    "👥 GROUP": ["tagall", "hidetag", "kick", "add", "promote", "demote", "warn", "warnings", "delwarn", "resetwarn", "antilink", "welcome", "goodbye", "open", "close", "groupinfo", "status2", "gcstatus", "setname", "setdesc", "linkgroup", "revoke"],
+    "💰 ECONOMY": ["bal", "daily", "weekly", "monthly", "work", "deposit", "withdraw", "pay", "rob", "jail", "bail", "escape", "economy", "bank", "bankupgrade", "market", "aza"],
+    "🎮 GAMES": ["coinflip", "slots", "guess", "blackjack", "dice", "rps", "battle", "duel", "accept", "games", "stats", "lb", "glb", "wordchain"],
+    "✨ ANIME": ["anime", "manga", "rwaifu", "waifu", "neko", "itadori", "shinobu", "megumin", "hug", "kiss", "pat", "slap", "cry", "dance", "kill", "cuddle", "bonk", "blush", "bite"],
+    "😝 FUN": ["fun", "truth", "dare", "truthdare", "roast", "compliment", "flirt", "joke", "rate", "ship", "wouldyou", "ronaldo", "elonmusk", "therock", "korean-girl", "japan-girl", "tiktok-girl", "random-girl", "hijab-girl", "hack", "quote", "insult", "pick", "couple", "riddle", "meme"],
+    "⚙️ UTILITY": ["ping", "alive", "menu", "owner", "profile", "weather", "calc", "qr", "tts", "short", "poll", "getjid", "reactch", "info", "define", "wiki", "crypto", "currency", "remind", "bio"],
+    "👑 OWNER": ["public", "private", "shutdown", "restart", "backup", "broadcast", "update", "block", "unblock", "sudo"]
+};
+
+function buildCategory(title, names, prefix) {
+    const rows = names.map(name => `┃ \( {prefix} \){name}`);
+    return `╭━━〔 \( {title} 〕━━⬣\n \){rows.join("\n")}\n╰━━━━━━━━━━━━━━━━⬣`;
+}
+
 module.exports = {
     name: "menu",
     aliases: ["m", "allmenu"],
@@ -81,113 +108,98 @@ module.exports = {
     run: async function ({ sock, from, message, args, sender }) {
         const settings = getSettings();
         const prefix = settings.prefix || "#";
-        const botName = settings.botName || "VENOM X";
         const ownerName = settings.ownerName || "AYOMIDE";
-        const ownerNumber = settings.ownerNumber || "";
+        const botName = settings.botName || "VENOM X";
+        const mode = String(settings.mode || "public").toUpperCase();
         const timeInfo = getTimeInfo();
         const registry = getCommandRegistry(sock);
-        const total = registry.size || 100;
+        const commands = buildCommands(registry);
+        const totalCommands = commands.size;
         const pushName = message.pushName || "User";
-        const uptime = formatUptime(Date.now() - startTime);
         const arg = (args[0] || "").toLowerCase();
 
-        // ==================== MAIN MENU (Premium Style) ====================
+        // ==================== SMALL MENU ====================
         if (arg !== "all" && arg !== "full") {
-            const caption = 
-`╭─────────────────────────────
-│  🌀 *${botName.toUpperCase()}*
-╰─────────────────────────────
-\( {timeInfo.greeting} @ \){sender.split("@")[0]}
+            const smallMenu = 
+`╭━━━「 🌀 *${botName}* 🌀 」━━━
+┃
+┃  👋 Hello, *${pushName}*
+┃  ✅ *${botName}* is active & ready.
+┃  ⚡ *Commands:* ${totalCommands}+
+┃
+┃  ◈ *${prefix}menu all*  → All commands
+┃  ◈ *${prefix}help*     → Command guide
+┃  ◈ *${prefix}ping*     → Response time
+┃  ◈ *${prefix}play*     → Music player
+┃  ◈ *${prefix}ai*       → AI assistant
+┃  ◈ *${prefix}nano*     → AI Image Gen
+┃
+╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-┏━━━『 👤 USER INFO 』━━━
-┃  NAME   : ${pushName}
-┃  TAG    : @${sender.split("@")[0]}
-┗━━━━━━━━━━━━━━━━━━━━
+> _Powered by VENOM X_ ⚡`;
 
-┏━━━『 ⚙️ SYSTEM INFO 』━━━
-┃  BOT NAME  : ${botName}
-┃  UPTIME    : ${uptime}
-┃  PREFIX    : ${prefix}
-┃  COMMANDS  : ${total}+
-┃  PLATFORM  : Baileys
-┗━━━━━━━━━━━━━━━━━━━━
-
-> 「 CLICK FOR INSTANT ACCESS 」
-
-⚡ *\( {botName}* by * \){ownerName}*`;
-
-            const img = pickRandomImage();
-
+            const selectedImage = pickRandomImage();
             try {
-                if (img && fs.existsSync(img)) {
+                if (selectedImage && fs.existsSync(selectedImage)) {
                     await sock.sendMessage(from, {
-                        image: fs.readFileSync(img),
-                        caption: caption,
-                        mentions: [sender],
-                        contextInfo: {
-                            externalAdReply: {
-                                title: `${botName} | Menu`,
-                                body: `Uptime: ${uptime}`,
-                                mediaType: 1,
-                                renderLargerThumbnail: true,
-                                sourceUrl: "https://whatsapp.com/channel/0029VbBy7DlGZNCnNNoB0Q12"
-                            }
-                        }
+                        image: fs.readFileSync(selectedImage),
+                        caption: smallMenu
                     }, { quoted: message });
                 } else {
-                    await sock.sendMessage(from, {
-                        text: caption,
-                        mentions: [sender]
-                    }, { quoted: message });
+                    await sock.sendMessage(from, { text: smallMenu }, { quoted: message });
                 }
             } catch {
-                await sock.sendMessage(from, { text: caption, mentions: [sender] }, { quoted: message });
+                await sock.sendMessage(from, { text: smallMenu }, { quoted: message }).catch(() => {});
             }
             return;
         }
 
         // ==================== FULL MENU ====================
-        const fullMenu = 
-`╭─────────────────────────────
-│  🌀 *${botName.toUpperCase()} FULL MENU*
-╰─────────────────────────────
+        const sections = Object.entries(categories).map(([title, names]) =>
+            buildCategory(title, names, prefix)
+        );
 
-┏━━━『 🧠 AI 』
-┃ ${prefix}ai  ${prefix}ask  ${prefix}gpt
-┃ ${prefix}nano  ${prefix}translate
-┗━━━━━━━━━━━━
+        const menuText =
+`╭━━〔 🤖 ${botName} MENU 〕━━⬣
+┃ 👋 ${timeInfo.greeting}, ${ownerName}!
+┃
+┃ 👑 Owner : ${ownerName}
+┃ 🌍 Mode : ${mode}
+┃ ⚡ Prefix : ${prefix}
+┃ 🤖 Version : ${settings.version || "3.0.0"}
+┃ 🚀 Status : ONLINE
+┃ 📦 Commands : ${totalCommands}
+┃
+┃ 🕐 Time : ${timeInfo.time}
+┃ 📅 Day : ${timeInfo.day}
+┃ 📆 Date : ${timeInfo.date}
+╰━━━━━━━━━━━━━━━━⬣
 
-┏━━━『 📥 DOWNLOADS 』
-┃ ${prefix}play  ${prefix}ytmp3  ${prefix}ytmp4
-┃ ${prefix}tiktok  ${prefix}ig  ${prefix}fb
-┗━━━━━━━━━━━━
+${sections.join("\n\n")}
 
-┏━━━『 👥 GROUP 』
-┃ ${prefix}tagall  ${prefix}hidetag  ${prefix}kick
-┃ ${prefix}promote  ${prefix}demote  ${prefix}antilink
-┃ ${prefix}warn  ${prefix}welcome  ${prefix}status2
-┗━━━━━━━━━━━━
+╭━━〔 📖 HELP 〕━━⬣
+┃ 💡 ${prefix}info <command>
+┃ 💡 ${prefix}menu
+┃ 💡 ${prefix}menu all
+╰━━━━━━━━━━━━━━━━⬣
 
-┏━━━『 🎮 FUN 』
-┃ ${prefix}ship  ${prefix}pick  ${prefix}couple
-┃ ${prefix}quote  ${prefix}insult  ${prefix}hack
-┃ ${prefix}meme  ${prefix}truth  ${prefix}dare
-┗━━━━━━━━━━━━
+╭━━〔 💀 ${botName} 〕━━⬣
+┃ 📦 Total Commands : ${totalCommands}
+┃ Powered By VENOM X
+╰━━━━━━━━━━━━━━━━⬣`;
 
-┏━━━『 🛠️ TOOLS 』
-┃ ${prefix}weather  ${prefix}calc  ${prefix}qr
-┃ ${prefix}define  ${prefix}wiki  ${prefix}crypto
-┃ ${prefix}pint  ${prefix}ss  ${prefix}tts
-┗━━━━━━━━━━━━
-
-┏━━━『 👑 OWNER 』
-┃ ${prefix}public  ${prefix}private  ${prefix}sudo
-┃ ${prefix}broadcast  ${prefix}restart
-┗━━━━━━━━━━━━
-
-> Type *${prefix}menu* for the main menu
-⚡ Powered by *${botName}*`;
-
-        await sock.sendMessage(from, { text: fullMenu }, { quoted: message });
+        const selectedImage = pickRandomImage();
+        try {
+            if (selectedImage && fs.existsSync(selectedImage)) {
+                await sock.sendMessage(from, {
+                    image: fs.readFileSync(selectedImage),
+                    caption: menuText
+                }, { quoted: message });
+            } else {
+                await sock.sendMessage(from, { text: menuText }, { quoted: message });
+            }
+        } catch {
+            await sock.sendMessage(from, { text: menuText }, { quoted: message }).catch(() => {});
+        }
     }
 };

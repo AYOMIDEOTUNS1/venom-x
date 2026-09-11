@@ -4,13 +4,12 @@ const START_WORDS = [
     "exaggerated", "beautiful", "challenge", "adventure", "pineapple",
     "keyboard", "umbrella", "mountain", "elephant", "strawberry",
     "knowledge", "wonderful", "excellent", "champion", "treasure",
-    "mysterious", "beautiful", "dangerous", "important", "education"
+    "mysterious", "dangerous", "important", "education", "beautiful"
 ];
 
-// Simple list of common short words to block
 const BANNED = new Set([
     "a","i","to","in","on","at","is","it","of","an","as","be","by","do","go","he","me","my","no","or","so","up","us","we",
-    "the","and","for","you","are","but","not","can","had","her","was","one","our","out","has","his","how","its","may","new","now","old","see","way","who","boy","did","get","has","him","let","put","say","she","too","use"
+    "the","and","for","you","are","but","not","can","had","her","was","one","our","out","has","his","how","its","may","new","now","old","see","way","who","boy","did","get","him","let","put","say","she","too","use"
 ]);
 
 function norm(s) {
@@ -25,7 +24,7 @@ function minLenFor(turnCount) {
     if (turnCount >= 15) return 6;
     if (turnCount >= 10) return 5;
     if (turnCount >= 5) return 4;
-    return 4; // start hard
+    return 4;
 }
 
 function getGame(from) {
@@ -41,7 +40,7 @@ function stopTimer(game) {
 
 function scheduleTurn(sock, from, game) {
     stopTimer(game);
-    const seconds = game.turnSeconds || 45;
+    const seconds = game.turnSeconds || 40;
 
     game.timer = setTimeout(async () => {
         const g = getGame(from);
@@ -194,7 +193,7 @@ Rules:
     }
 };
 
-// Handle plain words
+// Handle plain words during the game
 module.exports.handleWordChainMessage = async function (sock, msg, from, sender, body, isGroup) {
     if (!isGroup) return false;
     const game = getGame(from);
@@ -209,31 +208,39 @@ module.exports.handleWordChainMessage = async function (sock, msg, from, sender,
     const current = game.players[game.turn];
     if (sender !== current) return false;
 
-    // Must start with correct letter
     if (word[0] !== game.nextLetter) {
-        await sock.sendMessage(from, { text: `❌ Must start with *${game.nextLetter.toUpperCase()}*`, quoted: msg }).catch(() => {});
+        await sock.sendMessage(from, {
+            text: `❌ Must start with *${game.nextLetter.toUpperCase()}*`,
+            quoted: msg
+        }).catch(() => {});
         return true;
     }
 
-    // Minimum length
     if (word.length < game.minLen) {
-        await sock.sendMessage(from, { text: `❌ Minimum *${game.minLen}* letters required.`, quoted: msg }).catch(() => {});
+        await sock.sendMessage(from, {
+            text: `❌ Minimum *${game.minLen}* letters required.`,
+            quoted: msg
+        }).catch(() => {});
         return true;
     }
 
-    // Banned short words
     if (BANNED.has(word)) {
-        await sock.sendMessage(from, { text: `❌ Too basic. Use a better word.`, quoted: msg }).catch(() => {});
+        await sock.sendMessage(from, {
+            text: `❌ Too basic. Use a better word.`,
+            quoted: msg
+        }).catch(() => {});
         return true;
     }
 
-    // Already used
     if (game.used.has(word)) {
-        await sock.sendMessage(from, { text: `❌ Word already used.`, quoted: msg }).catch(() => {});
+        await sock.sendMessage(from, {
+            text: `❌ Word already used.`,
+            quoted: msg
+        }).catch(() => {});
         return true;
     }
 
-    // Accept word
+    // Accept the word
     game.used.add(word);
     game.nextLetter = word[word.length - 1];
     game.turnCount++;
@@ -241,7 +248,10 @@ module.exports.handleWordChainMessage = async function (sock, msg, from, sender,
 
     stopTimer(game);
 
-    await sock.sendMessage(from, { text: `✅ *${word}* accepted!`, quoted: msg }).catch(() => {});
+    await sock.sendMessage(from, {
+        text: `✅ *${word}* accepted!`,
+        quoted: msg
+    }).catch(() => {});
 
     game.turn = (game.turn + 1) % game.players.length;
     const next = game.players[game.turn];
