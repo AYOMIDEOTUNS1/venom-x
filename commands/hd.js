@@ -35,8 +35,7 @@ module.exports = {
             }
 
             const asDoc = String((args && args[0]) || "").toLowerCase() === "doc";
-
-            await reply(asDoc ? "📺 Creating HD file..." : "📺 Creating HD image...");
+            await reply(asDoc ? "📺 Enhancing HD file..." : "📺 Enhancing image to HD...");
 
             const media = await downloadMediaMessage(
                 {
@@ -50,35 +49,49 @@ module.exports = {
             const w = image.bitmap.width;
             const h = image.bitmap.height;
 
-            // Force Full HD on longest side (minimum 1920)
+            // Scale up to at least Full HD on longest side
             const longest = Math.max(w, h);
-            const targetLong = 1920;
+            const targetLong = longest < 1280 ? 1920 : Math.min(2560, Math.round(longest * 1.5));
             const scale = targetLong / longest;
 
             const newW = Math.max(1, Math.round(w * scale));
             const newH = Math.max(1, Math.round(h * scale));
 
-            if (typeof image.resize === "function") {
-                // jimp v0.22
-                if (Jimp.RESIZE_BICUBIC) {
-                    image.resize(newW, newH, Jimp.RESIZE_BICUBIC);
-                } else {
-                    image.resize(newW, newH);
-                }
+            // Resize
+            if (Jimp.RESIZE_BICUBIC) {
+                image.resize(newW, newH, Jimp.RESIZE_BICUBIC);
+            } else {
+                image.resize(newW, newH);
+            }
+
+            // Enhance quality
+            image
+                .contrast(0.15)
+                .normalize()
+                .sharpen(0.4);
+
+            // Slight extra clarity pass
+            if (typeof image.convolute === "function") {
+                try {
+                    image.convolute([
+                        [0, -0.15, 0],
+                        [-0.15, 1.6, -0.15],
+                        [0, -0.15, 0]
+                    ]);
+                } catch (e) {}
             }
 
             const out = await image.quality(100).getBufferAsync(Jimp.MIME_JPEG);
 
             const caption =
 "╭━━〔 📺 VENOM X HD 〕━━⬣\n\n" +
-"✅ HD ready\n" +
+"✅ HD Enhanced\n" +
 "📥 Original: " + w + "x" + h + "\n" +
 "📐 Output: " + newW + "x" + newH + "\n\n" +
 "⚡ Powered by VENOM X\n\n" +
 "╰━━━━━━━━━━━━━━━━⬣";
 
             if (asDoc) {
-                // Real file, WhatsApp will not recompress like chat photos
                 await sock.sendMessage(
                     from,
                     {
@@ -99,7 +112,7 @@ module.exports = {
                     { quoted: message }
                 );
 
-                // also send HD file so quality is preserved
+                // Also send as document so quality is preserved
                 await sock.sendMessage(
                     from,
                     {
