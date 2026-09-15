@@ -1,187 +1,151 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { execFile } = require("child_process");
-const { promisify } = require("util");
-
-const execFileAsync = promisify(execFile);
+const { runYtDlp } = require("../lib/ytdlp");
+const { getSettings } = require("../lib/settingsCache");
 
 function isUrl(text) {
-    return /^https?:\/\//i.test(text);
+    return /^https?:\/\//i.test(String(text || "").trim());
+}
+
+function px() {
+    try {
+        return getSettings().prefix || "#";
+    } catch (e) {
+        return "#";
+    }
 }
 
 module.exports = {
     name: "ig",
+    aliases: ["instagram", "igdl", "reel", "reels"],
 
-    aliases: [
-        "instagram",
-        "igdl",
-        "reel",
-        "reels"
-    ],
-
-    run: async ({
-        sock,
-        from,
-        args,
-        reply,
-        message
-    }) => {
+    run: async function ({ sock, from, args, reply, message }) {
+        const p = px();
 
         if (!args.length) {
             return reply(
 `╭━━〔 📸 VENOM X INSTAGRAM 〕━━⬣
-┃
-┃ Usage:
-┃ #ig <Instagram video/Reel URL>
-┃
-┃ Example:
-┃ #ig https://www.instagram.com/reel/...
-┃
-┃ ⚠️ Public posts/Reels only.
+
+Usage:
+${p}ig <Instagram video/Reel URL>
+
+Example:
+${p}ig https://www.instagram.com/reel/...
+
+⚠️ Public posts/Reels only.
+
 ╰━━━━━━━━━━━━━━━━⬣`
             );
         }
 
         const url = args.join(" ").trim();
-
-        if (!isUrl(url)) {
+        if (!isUrl(url) || !/instagram\.com|instagr\.am/i.test(url)) {
             return reply(
-`❌ Please send a valid Instagram URL.
-
-Example:
-#ig https://www.instagram.com/reel/...`
+                "❌ Send a valid Instagram URL.\n\nExample:\n" +
+                    p +
+                    "ig https://www.instagram.com/reel/..."
             );
         }
 
         const tempDir = await fs.promises.mkdtemp(
             path.join(os.tmpdir(), "venom-ig-")
         );
-
-        const output = path.join(
-            tempDir,
-            "instagram.%(ext)s"
-        );
+        const output = path.join(tempDir, "instagram.%(ext)s");
 
         try {
-
-            await sock.sendMessage(from, {
-                react: {
-                    text: "🔎",
-                    key: message.key
-                }
-            });
+            await sock
+                .sendMessage(from, {
+                    react: { text: "🔎", key: message.key }
+                })
+                .catch(function () {});
 
             await reply(
 `╭━━〔 📸 VENOM X INSTAGRAM 〕━━⬣
-┃
-┃ 🔎 Processing Instagram...
+┃ 🔎 Processing...
 ┃ ⏳ Downloading...
 ╰━━━━━━━━━━━━━━━━⬣`
             );
 
-            await execFileAsync(
-                "yt-dlp",
-                [
-                    "--no-playlist",
-                    "--no-warnings",
-                    "--restrict-filenames",
-                    "-f",
-                    "best[ext=mp4]/best",
-                    "-o",
-                    output,
-                    url
-                ],
-                {
-                    timeout: 180000,
-                    maxBuffer: 10 * 1024 * 1024
-                }
-            );
+            await runYtDlp([
+                "--no-playlist",
+                "--no-warnings",
+                "--restrict-filenames",
+                "-f",
+                "best[ext=mp4]/best",
+                "-o",
+                output,
+                url
+            ]);
 
             const files = await fs.promises.readdir(tempDir);
-
-            const videoFile = files.find(
-                file =>
-                    /\.(mp4|mkv|webm|mov)$/i.test(file)
-            );
+            const videoFile = files.find(function (file) {
+                return /\.(mp4|mkv|webm|mov)$/i.test(file);
+            });
 
             if (!videoFile) {
-                throw new Error(
-                    "Instagram video file was not created."
-                );
+                throw new Error("Instagram video file was not created.");
             }
 
-            const filePath = path.join(
-                tempDir,
-                videoFile
-            );
+            const filePath = path.join(tempDir, videoFile);
+            const buffer = await fs.promises.readFile(filePath);
+
+            if (buffer.length < 1000) {
+                throw new Error("Downloaded file is empty.");
+            }
+
+            if (buffer.length > 64 * 1024 * 1024) {
+                throw new Error("File too large for WhatsApp (>64MB).");
+            }
 
             await sock.sendMessage(
                 from,
                 {
-                    video: {
-                        url: filePath
-                    },
+                    video: buffer,
+                    mimetype: "video/mp4",
                     caption:
 `╭━━〔 📸 VENOM X INSTAGRAM 〕━━⬣
-┃
-┃ ✅ Download complete.
-┃
+┃ ✅ Download complete
 ┃ 📸 Instagram Video
 ╰━━━━━━━━━━━━━━━━⬣`
                 },
-                {
-                    quoted: message
-                }
+                { quoted: message }
             );
 
-            await sock.sendMessage(from, {
-                react: {
-                    text: "✅",
-                    key: message.key
-                }
-            });
-
+            await sock
+                .sendMessage(from, {
+                    react: { text: "✅", key: message.key }
+                })
+                .catch(function () {});
         } catch (error) {
+            console.log("INSTAGRAM DOWNLOAD ERROR:", error.message);
 
-            console.error(
-                "INSTAGRAM DOWNLOAD ERROR:",
-                error.message
-            );
-
-            await sock.sendMessage(from, {
-                react: {
-                    text: "❌",
-                    key: message.key
-                }
-            }).catch(() => {});
+            await sock
+                .sendMessage(from, {
+                    react: { text: "❌", key: message.key }
+                })
+                .catch(function () {});
 
             await reply(
 `╭━━〔 ❌ VENOM X INSTAGRAM 〕━━⬣
-┃
-┃ Download failed.
-┃
-┃ Possible reasons:
-┃ • Invalid Instagram URL
-┃ • Private post/account
-┃ • Login is required
-┃ • Instagram blocked the request
-┃
-┃ Try a public Reel/video URL.
+
+Download failed.
+
+${String(error.message || "").slice(0, 300)}
+
+Possible reasons:
+• Private post/account
+• Instagram blocked the server
+• Invalid URL
+
+Try a public Reel/video.
+
 ╰━━━━━━━━━━━━━━━━⬣`
             );
-
         } finally {
-
             try {
-                await fs.promises.rm(
-                    tempDir,
-                    {
-                        recursive: true,
-                        force: true
-                    }
-                );
-            } catch {}
+                await fs.promises.rm(tempDir, { recursive: true, force: true });
+            } catch (e) {}
         }
     }
 };

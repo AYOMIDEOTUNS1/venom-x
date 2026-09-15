@@ -84,11 +84,22 @@ module.exports = function (sock) {
         public: "🌍",
         wordchain: "🔤",
         wc: "🔤",
+        sudo: "👑",
         default: "⚙️"
     };
 
     function normalizeId(value) {
         return String(value || "").replace(/[^0-9]/g, "");
+    }
+
+    function checkSudo(id) {
+        try {
+            const sudo = require("../commands/sudo");
+            if (sudo && typeof sudo.isSudoNumber === "function") {
+                return sudo.isSudoNumber(id);
+            }
+        } catch (e) {}
+        return false;
     }
 
     function isOwnerSender(msg, settings, sender, senderPn, participantPn) {
@@ -112,6 +123,23 @@ module.exports = function (sock) {
             if (ownerLid && id === ownerLid) return true;
         }
 
+        return false;
+    }
+
+    function isSudoSender(msg, sender, senderPn, participantPn) {
+        if (msg && msg.key && msg.key.fromMe) return false;
+
+        const candidates = [
+            normalizeId(sender),
+            normalizeId(senderPn),
+            normalizeId(participantPn),
+            normalizeId(msg && msg.key ? msg.key.participant : ""),
+            normalizeId(msg && msg.key ? msg.key.remoteJid : "")
+        ];
+
+        for (let i = 0; i < candidates.length; i++) {
+            if (candidates[i] && checkSudo(candidates[i])) return true;
+        }
         return false;
     }
 
@@ -211,8 +239,23 @@ module.exports = function (sock) {
                 participantPn
             );
 
+            const isSudo = isSudoSender(msg, sender, senderPn, participantPn);
+
+            // Owner OR sudo can use bot in private mode / privileged cmds
+            const isPrivileged = isOwner || isSudo;
+
             const allowSelf = settings.allowSelf !== false;
             if (msg.key.fromMe && !allowSelf && !isOwner) return;
+
+            // Autoreact (non-blocking)
+            setImmediate(function () {
+                try {
+                    const ar = require("../commands/autoreact");
+                    if (ar.handleAutoReact) {
+                        Promise.resolve(ar.handleAutoReact(sock, msg)).catch(function () {});
+                    }
+                } catch (e) {}
+            });
 
             // Group protections (non-blocking)
             if (isGroup) {
@@ -274,7 +317,7 @@ module.exports = function (sock) {
 
             const prefix = settings.prefix || "#";
 
-            // ── Word Chain: plain words (NO prefix) during active game ──
+            // Word Chain (no prefix)
             if (isGroup && body.indexOf(prefix) !== 0) {
                 try {
                     const wc = require("../commands/wordchain");
@@ -295,7 +338,6 @@ module.exports = function (sock) {
                 return;
             }
 
-            // ── Commands need prefix ──
             if (body.indexOf(prefix) !== 0) return;
 
             const commandText = body.slice(prefix.length).trim();
@@ -356,9 +398,10 @@ module.exports = function (sock) {
                 return;
             }
 
+            // Private mode: owner OR sudo
             if (
                 String(settings.mode || "").toLowerCase() === "private" &&
-                !isOwner
+                !isPrivileged
             ) {
                 return;
             }
@@ -390,6 +433,8 @@ module.exports = function (sock) {
                     participantPn: participantPn,
                     isGroup: isGroup,
                     isOwner: isOwner,
+                    isSudo: isSudo,
+                    isPrivileged: isPrivileged,
                     args: args,
                     body: body,
                     commandName: commandName,

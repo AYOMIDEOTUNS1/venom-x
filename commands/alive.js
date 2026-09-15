@@ -17,13 +17,13 @@ function formatUptime(seconds) {
 }
 
 module.exports = {
-    name: "alive",
+    name: "uptime",
     aliases: ["up1"],
 
     run: async function ({ reply }) {
         const uptime = formatUptime(process.uptime());
         await reply(
-"╭━━〔 💚 VENOM X ALIVE 〕━━⬣\n" +
+"╭━━〔 💚 VENOM X UPTIME〕━━⬣\n" +
 "┃\n" +
 "┃ 🟢 Status : ONLINE\n" +
 "┃ ⚡ Speed : Active\n" +

@@ -1,20 +1,20 @@
-/**
- * 🔥 VENOM X - SUDO MANAGER (FIXED)
- */
+const fs = require("fs");
+const path = require("path");
+const { getSettings } = require("../lib/settingsCache");
 
-const fs = require('fs');
-const path = require('path');
-
-const SUDO_PATH = path.join(__dirname, '../data/sudo.json');
+const SUDO_PATH = path.join(__dirname, "../data/sudo.json");
 
 function loadSudo() {
     try {
         if (!fs.existsSync(SUDO_PATH)) {
-            fs.writeFileSync(SUDO_PATH, JSON.stringify([], null, 2));
+            const dir = path.dirname(SUDO_PATH);
+            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+            fs.writeFileSync(SUDO_PATH, "[]");
             return [];
         }
-        return JSON.parse(fs.readFileSync(SUDO_PATH, 'utf8'));
-    } catch {
+        const raw = JSON.parse(fs.readFileSync(SUDO_PATH, "utf8") || "[]");
+        return Array.isArray(raw) ? raw.map(cleanNumber).filter(Boolean) : [];
+    } catch (e) {
         return [];
     }
 }
@@ -25,12 +25,49 @@ function saveSudo(list) {
         if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
         fs.writeFileSync(SUDO_PATH, JSON.stringify(list, null, 2));
     } catch (e) {
-        console.error('[SUDO] Save error:', e.message);
+        console.log("[SUDO] Save error:", e.message);
     }
 }
 
 function cleanNumber(num) {
-    return String(num).replace(/\D/g, '');
+    return String(num || "").replace(/\D/g, "");
+}
+
+function prefix() {
+    try {
+        return getSettings().prefix || "#";
+    } catch (e) {
+        return "#";
+    }
+}
+
+function isSudoNumber(num) {
+    const n = cleanNumber(num);
+    if (!n) return false;
+    return loadSudo().indexOf(n) !== -1;
+}
+
+function resolveTarget(args, message) {
+    let target = args[1];
+
+    const ctx =
+        message &&
+        message.message &&
+        message.message.extendedTextMessage &&
+        message.message.extendedTextMessage.contextInfo;
+
+    if (!target && ctx && ctx.participant) {
+        target = ctx.participant;
+    }
+    if (!target && ctx && ctx.mentionedJid && ctx.mentionedJid[0]) {
+        target = ctx.mentionedJid[0];
+    }
+    // quoted participant
+    if (!target && ctx && ctx.participant) {
+        target = ctx.participant;
+    }
+
+    return target || null;
 }
 
 module.exports = {
@@ -38,109 +75,93 @@ module.exports = {
     aliases: ["addsudo", "delsudo", "listsudo"],
     category: "owner",
 
-    run: async ({ sock, args, reply, isOwner, message }) => {
+    // used by messages.js / ownerCheck
+    isSudoNumber: isSudoNumber,
+    loadSudo: loadSudo,
 
+    run: async function ({ args, reply, isOwner, message }) {
         if (!isOwner) {
-            return reply('🚫 *Only the Bot Owner can use this command.*');
+            return reply("🚫 Only the *bot owner* can manage sudo.");
         }
 
-        const action = (args[0] || '').toLowerCase();
+        const p = prefix();
+        const action = String(args[0] || "").toLowerCase();
         let sudoList = loadSudo();
 
-        // HELP
-        if (!action || action === 'help') {
-            return reply(`╭━━━『 *SUDO MANAGER* 』━━━
-│
-│  *Add Sudo*
-│  ▸ #sudo add @user
-│  ▸ #sudo add 234xxxxxxxxxx
-│
-│  *Remove Sudo*
-│  ▸ #sudo del @user
-│  ▸ #sudo del 234xxxxxxxxxx
-│
-│  *List Sudo*
-│  ▸ #sudo list
-│
-╰━━━━━━━━━━━━━━━━━━━`);
+        if (!action || action === "help") {
+            return reply(
+`╭━━〔 👑 SUDO MANAGER 〕━━⬣
+
+Add:
+${p}sudo add @user
+${p}sudo add 234xxxxxxxxxx
+
+Remove:
+${p}sudo del @user
+${p}sudo del 234xxxxxxxxxx
+
+List:
+${p}sudo list
+
+╰━━━━━━━━━━━━━━━━⬣`
+            );
         }
 
-        // LIST
-        if (action === 'list' || action === 'ls') {
-            if (sudoList.length === 0) {
-                return reply('📭 *No sudo users yet.*');
+        if (action === "list" || action === "ls") {
+            if (!sudoList.length) {
+                return reply("📭 No sudo users yet.");
             }
 
-            let listText = '';
-            sudoList.forEach((num, i) => {
-                listText += `│  \( {i + 1}. wa.me/ \){num}\n`;
-            });
+            let listText = "";
+            for (let i = 0; i < sudoList.length; i++) {
+                listText += "│  " + (i + 1) + ". wa.me/" + sudoList[i] + "\n";
+            }
 
-            return reply(`╭━━━『 👑 *SUDO LIST* 』━━━
-│  Total: *${sudoList.length}*
+            return reply(
+`╭━━〔 👑 SUDO LIST 〕━━⬣
+│ Total: *${sudoList.length}*
 │
-${listText}│
-╰━━━━━━━━━━━━━━━━━━━`);
+${listText}╰━━━━━━━━━━━━━━━━⬣`
+            );
         }
 
-        // ADD
-        if (action === 'add') {
-            let target = args[1];
-
-            if (!target && message.message?.extendedTextMessage?.contextInfo?.participant) {
-                target = message.message.extendedTextMessage.contextInfo.participant;
-            }
-            if (!target && message.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0]) {
-                target = message.message.extendedTextMessage.contextInfo.mentionedJid[0];
-            }
-
+        if (action === "add") {
+            const target = resolveTarget(args, message);
             if (!target) {
-                return reply('❌ Tag a user or type the number.\nExample: `#sudo add @user`');
+                return reply("❌ Tag a user or type a number.\n" + p + "sudo add @user");
             }
 
             const number = cleanNumber(target);
-
             if (number.length < 8) {
-                return reply('❌ Invalid number.');
+                return reply("❌ Invalid number.");
             }
-
-            if (sudoList.includes(number)) {
-                return reply(`⚠️ ${number} is already a Sudo user.`);
+            if (sudoList.indexOf(number) !== -1) {
+                return reply("⚠️ " + number + " is already sudo.");
             }
 
             sudoList.push(number);
             saveSudo(sudoList);
-
-            return reply(`✅ Successfully added *${number}* as Sudo!`);
+            return reply("✅ Added *" + number + "* as sudo.");
         }
 
-        // DELETE
-        if (['del', 'delete', 'remove', 'rm'].includes(action)) {
-            let target = args[1];
-
-            if (!target && message.message?.extendedTextMessage?.contextInfo?.participant) {
-                target = message.message.extendedTextMessage.contextInfo.participant;
-            }
-            if (!target && message.message?.extendedTextMessage?.contextInfo?.mentionedJid?.[0]) {
-                target = message.message.extendedTextMessage.contextInfo.mentionedJid[0];
-            }
-
+        if (["del", "delete", "remove", "rm"].indexOf(action) !== -1) {
+            const target = resolveTarget(args, message);
             if (!target) {
-                return reply('❌ Tag a user or type the number.\nExample: `#sudo del @user`');
+                return reply("❌ Tag a user or type a number.\n" + p + "sudo del @user");
             }
 
             const number = cleanNumber(target);
-
-            if (!sudoList.includes(number)) {
-                return reply(`⚠️ ${number} is not in the Sudo list.`);
+            if (sudoList.indexOf(number) === -1) {
+                return reply("⚠️ " + number + " is not sudo.");
             }
 
-            sudoList = sudoList.filter(n => n !== number);
+            sudoList = sudoList.filter(function (n) {
+                return n !== number;
+            });
             saveSudo(sudoList);
-
-            return reply(`✅ Successfully removed *${number}* from Sudo.`);
+            return reply("✅ Removed *" + number + "* from sudo.");
         }
 
-        return reply('❌ Invalid action.\nUse: `#sudo add`, `#sudo del` or `#sudo list`');
+        return reply("❌ Use: " + p + "sudo add | del | list");
     }
 };
