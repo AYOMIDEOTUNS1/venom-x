@@ -1,132 +1,175 @@
 const economy = require("../lib/economy");
 
-const JAIL_TIME = 60 * 60 * 1000;
-const JAIL_COST = 5000;
+const JAIL_TIME = 60 * 60 * 1000; // 60 minutes
+
+function getTargetJid(message, args) {
+    // 1) Mention
+    var context =
+        (message.message &&
+            message.message.extendedTextMessage &&
+            message.message.extendedTextMessage.contextInfo) ||
+        {};
+
+    if (context.mentionedJid && context.mentionedJid[0]) {
+        return context.mentionedJid[0];
+    }
+
+    // 2) Reply
+    if (context.participant) {
+        return context.participant;
+    }
+
+    // 3) Number in args
+    for (var i = 0; i < (args || []).length; i++) {
+        var num = String(args[i] || "").replace(/\D/g, "");
+        if (num.length > 6) {
+            return num + "@s.whatsapp.net";
+        }
+    }
+
+    return null;
+}
+
+function cleanId(id) {
+    return String(id || "").split("@")[0].split(":")[0];
+}
+
+function normalize(id) {
+    if (typeof economy.normalizeId === "function") {
+        return economy.normalizeId(id);
+    }
+    return String(id || "");
+}
 
 module.exports = {
     name: "jail",
+    aliases: ["prison"],
 
-    run: async ({
+    run: async function ({
         sock,
         from,
         message,
         sender,
         args,
-        isOwner
-    }) => {
-
+        isOwner,
+        reply
+    }) {
         if (!isOwner) {
-            return sock.sendMessage(
-                from,
-                {
-                    text:
-`╭━━〔 🚔 VENOM JAIL 〕━━⬣
-┃
-┃ ❌ ACCESS DENIED
-┃
-┃ 👑 Only the VENOM X owner
-┃ can use .jail.
-╰━━━━━━━━━━━━━━━━⬣`
-                },
-                { quoted: message }
-            );
+            return sock.sendMessage(from, {
+                text:
+"╭━━〔 🚔 VENOM JAIL 〕━━⬣\n" +
+"┃\n" +
+"┃ ❌ ACCESS DENIED\n" +
+"┃ 👑 Owner only\n" +
+"╰━━━━━━━━━━━━━━━━⬣"
+            }, { quoted: message });
         }
 
-        if (!args[0]) {
-            return sock.sendMessage(
-                from,
-                {
-                    text:
-`╭━━〔 🚔 VENOM JAIL 〕━━⬣
-┃
-┃ Usage:
-┃ .jail @user
-┃
-┃ 💰 Cost : ${JAIL_COST.toLocaleString()} VENOM
-┃ ⏱️ Sentence : 60 minutes
-╰━━━━━━━━━━━━━━━━⬣`
-                },
-                { quoted: message }
-            );
+        var sub = String((args && args[0]) || "").toLowerCase();
+
+        // =========================
+        // UNJAIL
+        // =========================
+        if (sub === "release" || sub === "free" || sub === "unjail") {
+            var freeTarget = getTargetJid(message, args.slice(1));
+            if (!freeTarget) {
+                return reply("Usage:\n#jail release @user");
+            }
+
+            freeTarget = normalize(freeTarget);
+            economy.set(freeTarget, {
+                jailedUntil: 0,
+                robStars: 0,
+                wantedUntil: 0
+            });
+
+            return sock.sendMessage(from, {
+                text:
+"╭━━〔 🔓 RELEASED 〕━━⬣\n" +
+"┃\n" +
+"┃ 👤 @" + cleanId(freeTarget) + "\n" +
+"┃ ✅ Released from jail\n" +
+"╰━━━━━━━━━━━━━━━━⬣",
+                mentions: [freeTarget]
+            }, { quoted: message });
         }
 
-        const target =
-            args[0].replace(/\D/g, "");
+        // =========================
+        // JAIL USER
+        // =========================
+        var targetJid = getTargetJid(message, args);
 
-        if (!target) {
-            return sock.sendMessage(
-                from,
-                {
-                    text: "❌ Invalid player."
-                },
-                { quoted: message }
-            );
+        if (!targetJid) {
+            return sock.sendMessage(from, {
+                text:
+"╭━━〔 🚔 VENOM JAIL 〕━━⬣\n" +
+"┃\n" +
+"┃ Usage:\n" +
+"┃ #jail @user\n" +
+"┃ #jail @user 30   (custom minutes)\n" +
+"┃ #jail release @user\n" +
+"┃\n" +
+"┃ Or reply to their message:\n" +
+"┃ #jail\n" +
+"┃\n" +
+"┃ Default sentence: 60 minutes\n" +
+"╰━━━━━━━━━━━━━━━━⬣"
+            }, { quoted: message });
         }
 
-        const targetJid =
-            `${target}@s.whatsapp.net`;
+        targetJid = normalize(targetJid);
+        var senderId = normalize(sender);
 
-        if (targetJid === sender) {
-            return sock.sendMessage(
-                from,
-                {
-                    text: "😂 You can't jail yourself."
-                },
-                { quoted: message }
-            );
+        if (targetJid === senderId) {
+            return reply("😂 You can't jail yourself.");
         }
 
-        const targetUser =
-            economy.get(targetJid);
+        // Optional custom minutes: #jail @user 30
+        var minutes = 60;
+        for (var i = 0; i < args.length; i++) {
+            var n = Number(args[i]);
+            if (Number.isInteger(n) && n > 0 && n <= 1440) {
+                minutes = n;
+                break;
+            }
+        }
 
-        const now = Date.now();
+        var jailMs = minutes * 60 * 1000;
+        var user = economy.get(targetJid);
+        var now = Date.now();
 
-        if (
-            targetUser.jailedUntil &&
-            targetUser.jailedUntil > now
-        ) {
-            const remaining = Math.ceil(
-                (targetUser.jailedUntil - now) / 60000
-            );
-
-            return sock.sendMessage(
-                from,
-                {
-                    text:
-`🚔 @${target} is already jailed.
-
-⏳ Remaining : ${remaining} minutes`,
-                    mentions: [targetJid]
-                },
-                { quoted: message }
-            );
+        if (user.jailedUntil && user.jailedUntil > now) {
+            var left = Math.ceil((user.jailedUntil - now) / 60000);
+            return sock.sendMessage(from, {
+                text:
+"🚔 @" + cleanId(targetJid) + " is already jailed.\n" +
+"⏳ Remaining: " + left + " minutes",
+                mentions: [targetJid]
+            }, { quoted: message });
         }
 
         economy.set(targetJid, {
-            jailedUntil: now + JAIL_TIME,
+            jailedUntil: now + jailMs,
             robStars: 0,
             wantedUntil: 0
         });
 
-        return sock.sendMessage(
-            from,
-            {
-                text:
-`╭━━〔 🚔 VENOM JAIL 〕━━⬣
-┃
-┃ 👑 OWNER ACTION
-┃
-┃ 🔒 Prisoner : @${target}
-┃ ⏱️ Sentence : 60 minutes
-┃
-┃ ⭐ Wanted level cleared
-┃
-┃ 💵 Bail available:
-┃ .bail
-╰━━━━━━━━━━━━━━━━⬣`,
-                mentions: [targetJid]
-            },
-            { quoted: message }
-        );
+        return sock.sendMessage(from, {
+            text:
+"╭━━〔 🚔 VENOM JAIL 〕━━⬣\n" +
+"┃\n" +
+"┃ 👑 OWNER ACTION\n" +
+"┃\n" +
+"┃ 🔒 Prisoner: @" + cleanId(targetJid) + "\n" +
+"┃ ⏱️ Sentence: " + minutes + " minutes\n" +
+"┃\n" +
+"┃ ⭐ Wanted level cleared\n" +
+"┃\n" +
+"┃ Early release:\n" +
+"┃ #bail  (player)\n" +
+"┃ #jail release @user  (owner)\n" +
+"╰━━━━━━━━━━━━━━━━⬣",
+            mentions: [targetJid]
+        }, { quoted: message });
     }
 };

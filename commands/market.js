@@ -1,680 +1,208 @@
 const economy = require("../lib/economy");
 
-// ============================================================
-// MARKET CONFIG
-// ============================================================
-
 const ITEMS = {
     shield: {
         name: "🛡️ Rob Shield",
         price: 500000,
         duration: 60 * 60 * 1000,
         durationText: "1 hour",
-        description:
-            "Protects you from one successful robbery."
+        description: "Blocks one successful robbery on your wallet."
     },
-
     vault: {
         name: "🔐 Secure Vault",
         price: 1000000,
         duration: 24 * 60 * 60 * 1000,
         durationText: "24 hours",
-        description:
-            "Protects your bank from robbery."
+        description: "Protects your bank from robbery."
     },
-
     xpboost: {
         name: "⚡ XP Boost",
         price: 350000,
-        description:
-            "Instantly gives 500 XP."
+        description: "Instantly gives +500 XP."
     },
-
     bankupgrade: {
         name: "🏦 Bank Upgrade",
         price: 750000,
-        description:
-            "Permanently adds 200,000 bank capacity."
+        description: "Permanently adds +200,000 bank capacity."
     },
-
     lucky: {
         name: "🍀 Lucky Charm",
         price: 750000,
         duration: 24 * 60 * 60 * 1000,
         durationText: "24 hours",
-        description:
-            "Gives +50 bonus XP after completed games."
+        description: "+10% game win chance and +50 XP per game."
     }
 };
 
-const LUCKY_GAME_XP =
-    50;
-
-// ============================================================
-// TIME FORMAT
-// ============================================================
-
 function formatTime(ms) {
-    ms = Math.max(
-        0,
-        Number(ms) || 0
-    );
-
-    const totalSeconds =
-        Math.ceil(ms / 1000);
-
-    const days =
-        Math.floor(
-            totalSeconds / 86400
-        );
-
-    const hours =
-        Math.floor(
-            (totalSeconds % 86400) / 3600
-        );
-
-    const minutes =
-        Math.floor(
-            (totalSeconds % 3600) / 60
-        );
-
-    const seconds =
-        totalSeconds % 60;
-
-    const parts = [];
-
-    if (days > 0) {
-        parts.push(`${days}d`);
-    }
-
-    if (hours > 0) {
-        parts.push(`${hours}h`);
-    }
-
-    if (minutes > 0) {
-        parts.push(`${minutes}m`);
-    }
-
-    if (
-        seconds > 0 &&
-        parts.length < 2
-    ) {
-        parts.push(`${seconds}s`);
-    }
-
-    return parts.join(" ") || "0s";
+    ms = Math.max(0, Number(ms) || 0);
+    var totalSeconds = Math.ceil(ms / 1000);
+    var hours = Math.floor(totalSeconds / 3600);
+    var minutes = Math.floor((totalSeconds % 3600) / 60);
+    var seconds = totalSeconds % 60;
+    if (hours > 0) return hours + "h " + minutes + "m";
+    if (minutes > 0) return minutes + "m " + seconds + "s";
+    return seconds + "s";
 }
-
-// ============================================================
-// INVENTORY
-// ============================================================
-
-function ensureInventory(user) {
-    if (
-        !user.inventory ||
-        typeof user.inventory !== "object"
-    ) {
-        user.inventory = {};
-    }
-
-    return user.inventory;
-}
-
-// ============================================================
-// ACTIVE ITEM DISPLAY
-// ============================================================
 
 function itemStatus(user, item) {
-    const until =
-        Number(
-            user.items?.[`${item}Until`] || 0
-        );
-
-    if (until <= Date.now()) {
-        return "❌ Inactive";
-    }
-
-    return `🟢 ${formatTime(
-        until - Date.now()
-    )} remaining`;
+    var until = Number((user.items && user.items[item + "Until"]) || 0);
+    if (until <= Date.now()) return "❌ Inactive";
+    return "🟢 " + formatTime(until - Date.now()) + " left";
 }
-
-// ============================================================
-// MODULE
-// ============================================================
 
 module.exports = {
     name: "market",
+    aliases: ["shop", "store"],
 
-    aliases: [
-        "shop",
-        "store"
-    ],
+    run: async function ({ sock, from, message, sender, args }) {
+        var user = economy.get(sender);
+        if (!user.inventory || typeof user.inventory !== "object") user.inventory = {};
+        if (!user.items || typeof user.items !== "object") user.items = {};
 
-    run: async ({
-        sock,
-        from,
-        message,
-        sender,
-        args
-    }) => {
-
-        let user =
-            economy.get(sender);
-
-        const inventory =
-            ensureInventory(user);
-
-        const action =
-            String(
-                args?.[0] || ""
-            ).toLowerCase();
-
-        // =====================================================
-        // MARKET MENU
-        // =====================================================
+        var action = String((args && args[0]) || "").toLowerCase();
 
         if (!action) {
-
-            return sock.sendMessage(
-                from,
-                {
-                    text:
-`╭━━〔 🛒 VENOM X MARKET 〕━━⬣
-┃
-┃ 💰 Wallet
-┃    ${Number(
-    user.balance
-).toLocaleString()} VENOM
-┃
-┃ 💎 PREMIUM ITEMS
-┃
-┃ 🍀 lucky
-┃    750,000 VENOM
-┃    ⏱️ 24 hours
-┃    ✨ +50 XP/game
-┃
-┃ 🛡️ shield
-┃    500,000 VENOM
-┃    ⏱️ 1 hour
-┃    🚔 Rob protection
-┃
-┃ 🔐 vault
-┃    1,000,000 VENOM
-┃    ⏱️ 24 hours
-┃    🏦 Bank protection
-┃
-┃ ⚡ xpboost
-┃    350,000 VENOM
-┃    ✨ Instant +500 XP
-┃
-┃ 🏦 bankupgrade
-┃    750,000 VENOM
-┃    ♾️ Permanent
-┃    ⬆️ +200,000 capacity
-┃
-┃ ━━━━━━━━━━━━━━━
-┃
-┃ 📦 Commands
-┃ .market buy <item>
-┃ .market inventory
-┃
-┃ Example:
-┃ .market buy lucky
-╰━━━━━━━━━━━━━━━━⬣`
-                },
-                {
-                    quoted: message
-                }
-            );
+            return sock.sendMessage(from, {
+                text:
+"╭━━〔 🛒 VENOM X MARKET 〕━━⬣\n" +
+"┃\n" +
+"┃ 💰 Wallet: " + Number(user.balance || 0).toLocaleString() + " VENOM\n" +
+"┃\n" +
+"┃ 🍀 lucky — 750,000 (24h)\n" +
+"┃    +10% win chance, +50 XP/game\n" +
+"┃\n" +
+"┃ 🛡️ shield — 500,000 (1h)\n" +
+"┃    Block 1 wallet robbery\n" +
+"┃\n" +
+"┃ 🔐 vault — 1,000,000 (24h)\n" +
+"┃    Protect bank from rob\n" +
+"┃\n" +
+"┃ ⚡ xpboost — 350,000\n" +
+"┃    Instant +500 XP\n" +
+"┃\n" +
+"┃ 🏦 bankupgrade — 750,000\n" +
+"┃    +200,000 bank capacity\n" +
+"┃\n" +
+"┃ #market buy <item>\n" +
+"┃ #market inventory\n" +
+"╰━━━━━━━━━━━━━━━━⬣"
+            }, { quoted: message });
         }
 
-        // =====================================================
-        // INVENTORY
-        // =====================================================
-
-        if (
-            action === "inventory" ||
-            action === "inv"
-        ) {
-
-            user =
-                economy.get(sender);
-
-            return sock.sendMessage(
-                from,
-                {
-                    text:
-`╭━━〔 🎒 VENOM INVENTORY 〕━━⬣
-┃
-┃ 👤 @${sender.split("@")[0]}
-┃
-┃ 🍀 Lucky Charm
-┃    Owned : ${Number(
-        inventory.lucky || 0
-    )}
-┃    ${itemStatus(user, "lucky")}
-┃
-┃ 🛡️ Rob Shield
-┃    Owned : ${Number(
-        inventory.shield || 0
-    )}
-┃    ${itemStatus(user, "shield")}
-┃
-┃ 🔐 Secure Vault
-┃    Owned : ${Number(
-        inventory.vault || 0
-    )}
-┃    ${itemStatus(user, "vault")}
-┃
-┃ ⚡ XP Boost
-┃    Instant-use item
-┃
-┃ 🏦 Bank Upgrade
-┃    ${user.bankUpgraded
-        ? "✅ Purchased"
-        : "❌ Not purchased"}
-╰━━━━━━━━━━━━━━━━⬣`,
-                    mentions: [sender]
-                },
-                {
-                    quoted: message
-                }
-            );
+        if (action === "inventory" || action === "inv") {
+            user = economy.get(sender);
+            return sock.sendMessage(from, {
+                text:
+"╭━━〔 🎒 INVENTORY 〕━━⬣\n" +
+"┃\n" +
+"┃ 👤 @" + sender.split("@")[0] + "\n" +
+"┃\n" +
+"┃ 🍀 Lucky: " + itemStatus(user, "lucky") + "\n" +
+"┃ 🛡️ Shield: " + itemStatus(user, "shield") + "\n" +
+"┃ 🔐 Vault: " + itemStatus(user, "vault") + "\n" +
+"┃ 🏦 Bank Upgrade: " + (user.bankUpgraded ? "✅ Yes" : "❌ No") + "\n" +
+"╰━━━━━━━━━━━━━━━━⬣",
+                mentions: [sender]
+            }, { quoted: message });
         }
-
-        // =====================================================
-        // BUY
-        // =====================================================
 
         if (action !== "buy") {
-
-            return sock.sendMessage(
-                from,
-                {
-                    text:
-`❌ Invalid market command.
-
-Use:
-
-.market
-.market buy <item>
-.market inventory`
-                },
-                {
-                    quoted: message
-                }
-            );
+            return sock.sendMessage(from, {
+                text: "❌ Use:\n#market\n#market buy <item>\n#market inventory"
+            }, { quoted: message });
         }
 
-        const itemKey =
-            String(
-                args?.[1] || ""
-            ).toLowerCase();
-
-        const item =
-            ITEMS[itemKey];
-
+        var itemKey = String((args && args[1]) || "").toLowerCase();
+        var item = ITEMS[itemKey];
         if (!item) {
-
-            return sock.sendMessage(
-                from,
-                {
-                    text:
-`❌ Unknown item.
-
-Available:
-
-🍀 lucky
-🛡️ shield
-🔐 vault
-⚡ xpboost
-🏦 bankupgrade`
-                },
-                {
-                    quoted: message
-                }
-            );
+            return sock.sendMessage(from, {
+                text: "❌ Unknown item.\nAvailable: lucky, shield, vault, xpboost, bankupgrade"
+            }, { quoted: message });
         }
 
-        user =
-            economy.get(sender);
+        user = economy.get(sender);
 
-        // =====================================================
         // BANK UPGRADE
-        // =====================================================
-
-        if (
-            itemKey === "bankupgrade"
-        ) {
-
-            if (
-                user.bankUpgraded ||
-                user.bankCapacity >
-                    1000000
-            ) {
-
-                return sock.sendMessage(
-                    from,
-                    {
-                        text:
-`╭━━〔 🏦 BANK MAXED 〕━━⬣
-┃
-┃ 🔒 Already upgraded.
-┃
-┃ 🏦 Capacity
-┃    ${Number(
-        user.bankCapacity
-    ).toLocaleString()} VENOM
-╰━━━━━━━━━━━━━━━━⬣`
-                    },
-                    {
-                        quoted: message
-                    }
-                );
+        if (itemKey === "bankupgrade") {
+            if (user.bankUpgraded || Number(user.bankCapacity) > 1000000) {
+                return sock.sendMessage(from, {
+                    text: "🔒 Bank already upgraded.\nCapacity: " + Number(user.bankCapacity || 1000000).toLocaleString()
+                }, { quoted: message });
             }
-
-            if (
-                user.balance <
-                item.price
-            ) {
-                return sock.sendMessage(
-                    from,
-                    {
-                        text:
-`❌ You need ${item.price.toLocaleString()} VENOM.
-
-💰 Wallet :
-${Number(
-    user.balance
-).toLocaleString()} VENOM`
-                    },
-                    {
-                        quoted: message
-                    }
-                );
+            if (Number(user.balance) < item.price) {
+                return sock.sendMessage(from, {
+                    text: "❌ Need " + item.price.toLocaleString() + " VENOM"
+                }, { quoted: message });
             }
-
-            economy.add(
-                sender,
-                -item.price
-            );
-
-            const result =
-                economy.upgradeBank(
-                    sender
-                );
-
-            const updated =
-                economy.get(sender);
-
-            return sock.sendMessage(
-                from,
-                {
-                    text:
-`╭━━〔 🏦 BANK UPGRADE 〕━━⬣
-┃
-┃ 👤 @${sender.split("@")[0]}
-┃
-┃ 💸 Paid
-┃    ${item.price.toLocaleString()} VENOM
-┃
-┃ 🏦 Old Capacity
-┃    ${Number(
-        result.oldCapacity
-    ).toLocaleString()}
-┃
-┃ ⬆️ Increase
-┃    +${Number(
-        result.increase
-    ).toLocaleString()}
-┃
-┃ 🏦 New Capacity
-┃    ${Number(
-        result.newCapacity
-    ).toLocaleString()} VENOM
-┃
-┃ ♾️ Permanent
-┃
-┃ 💰 Wallet
-┃    ${Number(
-        updated.balance
-    ).toLocaleString()} VENOM
-╰━━━━━━━━━━━━━━━━⬣`,
-                    mentions: [sender]
-                },
-                {
-                    quoted: message
-                }
-            );
-        }
-
-        // =====================================================
-        // BALANCE CHECK
-        // =====================================================
-
-        if (
-            Number(user.balance) <
-            item.price
-        ) {
-
-            return sock.sendMessage(
-                from,
-                {
-                    text:
-`╭━━〔 ❌ PURCHASE FAILED 〕━━⬣
-┃
-┃ 🛍️ ${item.name}
-┃
-┃ 💸 Price
-┃    ${item.price.toLocaleString()} VENOM
-┃
-┃ 💰 Wallet
-┃    ${Number(
-        user.balance
-    ).toLocaleString()} VENOM
-┃
-┃ ❌ Not enough VENOM.
-╰━━━━━━━━━━━━━━━━⬣`
-                },
-                {
-                    quoted: message
-                }
-            );
-        }
-
-        // =====================================================
-        // XP BOOST
-        // =====================================================
-
-        if (
-            itemKey === "xpboost"
-        ) {
-
-            economy.add(
-                sender,
-                -item.price
-            );
-
-            const result =
-                economy.addXP(
-                    sender,
-                    500
-                );
-
-            const updated =
-                economy.get(sender);
-
-            return sock.sendMessage(
-                from,
-                {
-                    text:
-`╭━━〔 ⚡ XP BOOST 〕━━⬣
-┃
-┃ 👤 @${sender.split("@")[0]}
-┃
-┃ 💸 Paid
-┃    ${item.price.toLocaleString()} VENOM
-┃
-┃ ✨ XP
-┃    +500
-┃
-┃ ⭐ Level
-┃    ${updated.level}
-┃
-┃ 📈 Total XP
-┃    ${updated.xp}
-┃
-┃ 💰 Wallet
-┃    ${Number(
-        updated.balance
-    ).toLocaleString()} VENOM
-╰━━━━━━━━━━━━━━━━⬣`,
-                    mentions: [sender]
-                },
-                {
-                    quoted: message
-                }
-            );
-        }
-
-        // =====================================================
-        // TIMED ITEMS
-        // =====================================================
-
-        if (
-            itemKey === "lucky" ||
-            itemKey === "shield" ||
-            itemKey === "vault"
-        ) {
-
-            const untilKey =
-                `${itemKey}Until`;
-
-            const currentlyActive =
-                Number(
-                    user.items?.[untilKey] || 0
-                ) > Date.now();
-
-            // Buy another one:
-            // extend the existing timer.
-            const oldUntil =
-                currentlyActive
-                    ? Number(
-                        user.items[untilKey]
-                    )
-                    : Date.now();
-
-            economy.add(
-                sender,
-                -item.price
-            );
-
-            const newUntil =
-                oldUntil +
-                item.duration;
-
-            inventory[itemKey] =
-                Number(
-                    inventory[itemKey] || 0
-                ) + 1;
-
-            economy.set(sender, {
-                inventory,
-
-                items: {
-                    ...user.items,
-                    [untilKey]: newUntil
-                }
-            });
-
-            const updated =
-                economy.get(sender);
-
-            return sock.sendMessage(
-                from,
-                {
-                    text:
-`╭━━〔 🛒 PURCHASE SUCCESS 〕━━⬣
-┃
-┃ 👤 @${sender.split("@")[0]}
-┃
-┃ 🛍️ ${item.name}
-┃
-┃ 💸 Paid
-┃    ${item.price.toLocaleString()} VENOM
-┃
-┃ ⏱️ Duration
-┃    ${item.durationText}
-┃
-┃ 📅 New Expiry
-┃    ${new Date(
-        newUntil
-    ).toLocaleString()}
-┃
-┃ 🎒 Owned
-┃    ${inventory[itemKey]}
-┃
-┃ ℹ️ ${item.description}
-┃
-┃ 💰 Wallet
-┃    ${Number(
-        updated.balance
-    ).toLocaleString()} VENOM
-╰━━━━━━━━━━━━━━━━⬣`,
-                    mentions: [sender]
-                },
-                {
-                    quoted: message
-                }
-            );
-        }
-
-        // =====================================================
-        // FALLBACK
-        // =====================================================
-
-        economy.add(
-            sender,
-            -item.price
-        );
-
-        inventory[itemKey] =
-            Number(
-                inventory[itemKey] || 0
-            ) + 1;
-
-        economy.set(sender, {
-            inventory
-        });
-
-        const updated =
-            economy.get(sender);
-
-        await sock.sendMessage(
-            from,
-            {
+            economy.add(sender, -item.price);
+            var result = economy.upgradeBank(sender);
+            var updated = economy.get(sender);
+            return sock.sendMessage(from, {
                 text:
-`╭━━〔 🛒 PURCHASE SUCCESS 〕━━⬣
-┃
-┃ 🛍️ ${item.name}
-┃
-┃ 💸 Paid
-┃    ${item.price.toLocaleString()} VENOM
-┃
-┃ 🎒 Owned
-┃    ${inventory[itemKey]}
-┃
-┃ 💰 Wallet
-┃    ${Number(
-        updated.balance
-    ).toLocaleString()} VENOM
-╰━━━━━━━━━━━━━━━━⬣`,
+"╭━━〔 🏦 BANK UPGRADE 〕━━⬣\n" +
+"┃ 💸 Paid: " + item.price.toLocaleString() + "\n" +
+"┃ ⬆️ +" + Number(result.increase || 200000).toLocaleString() + "\n" +
+"┃ 🏦 New: " + Number(result.newCapacity || updated.bankCapacity).toLocaleString() + "\n" +
+"┃ 💰 Wallet: " + Number(updated.balance).toLocaleString() + "\n" +
+"╰━━━━━━━━━━━━━━━━⬣"
+            }, { quoted: message });
+        }
+
+        if (Number(user.balance) < item.price) {
+            return sock.sendMessage(from, {
+                text:
+"❌ Not enough VENOM\n" +
+"Price: " + item.price.toLocaleString() + "\n" +
+"Wallet: " + Number(user.balance).toLocaleString()
+            }, { quoted: message });
+        }
+
+        // XP BOOST (instant)
+        if (itemKey === "xpboost") {
+            economy.add(sender, -item.price);
+            var xpResult = economy.addXP(sender, 500);
+            updated = economy.get(sender);
+            return sock.sendMessage(from, {
+                text:
+"╭━━〔 ⚡ XP BOOST 〕━━⬣\n" +
+"┃ ✨ +500 XP\n" +
+"┃ ⭐ Level: " + (xpResult.level || updated.level || 1) + "\n" +
+"┃ 💰 Wallet: " + Number(updated.balance).toLocaleString() + "\n" +
+"╰━━━━━━━━━━━━━━━━⬣",
                 mentions: [sender]
-            },
-            {
-                quoted: message
-            }
-        );
+            }, { quoted: message });
+        }
+
+        // TIMED ITEMS: lucky / shield / vault
+        if (itemKey === "lucky" || itemKey === "shield" || itemKey === "vault") {
+            var untilKey = itemKey + "Until";
+            var oldUntil = Number((user.items && user.items[untilKey]) || 0);
+            var base = oldUntil > Date.now() ? oldUntil : Date.now();
+            var newUntil = base + item.duration;
+
+            economy.add(sender, -item.price);
+
+            var inventory = user.inventory || {};
+            inventory[itemKey] = Number(inventory[itemKey] || 0) + 1;
+
+            var items = Object.assign({}, user.items || {});
+            items[untilKey] = newUntil;
+
+            economy.set(sender, { inventory: inventory, items: items });
+            updated = economy.get(sender);
+
+            return sock.sendMessage(from, {
+                text:
+"╭━━〔 🛒 PURCHASED 〕━━⬣\n" +
+"┃ 🛍️ " + item.name + "\n" +
+"┃ 💸 " + item.price.toLocaleString() + " VENOM\n" +
+"┃ ⏱️ " + item.durationText + "\n" +
+"┃ ℹ️ " + item.description + "\n" +
+"┃ 💰 Wallet: " + Number(updated.balance).toLocaleString() + "\n" +
+"╰━━━━━━━━━━━━━━━━⬣",
+                mentions: [sender]
+            }, { quoted: message });
+        }
     }
 };
