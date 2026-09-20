@@ -1,6 +1,6 @@
 /**
- * VENOM X - GROUP STATUS (Clean + Stable)
- * Multi-group | Colors | Owner/Sudo | No Auto-Delete
+ * VENOM X - GROUP STATUS (Fixed Upload)
+ * Text / Image / Video / Audio / Sticker
  */
 "use strict";
 
@@ -10,7 +10,11 @@ const os = require("os");
 const crypto = require("crypto");
 const { exec } = require("child_process");
 const { promisify } = require("util");
-const { downloadContentFromMessage } = require("@whiskeysockets/baileys");
+const {
+    downloadContentFromMessage,
+    generateWAMessageFromContent,
+    prepareWAMessageMedia
+} = require("@whiskeysockets/baileys");
 const { getSettings } = require("../lib/settingsCache");
 
 const execAsync = promisify(exec);
@@ -21,32 +25,24 @@ const MEMORY_GROUP_CACHE = new Map();
 const CACHE_TTL_MS = 10 * 60 * 1000;
 const COOLDOWN_MS = 8000;
 const userCooldown = new Map();
+const DEFAULT_COLOR = "#9C27B0";
 
 const COLOR_MAP = {
     purple: "#9C27B0",
     violet: "#7B1FA2",
     pink: "#E91E63",
-    hotpink: "#FF4081",
     red: "#F44336",
     orange: "#FF5722",
-    amber: "#FF8F00",
     yellow: "#FFC107",
-    lime: "#8BC34A",
     green: "#4CAF50",
     teal: "#009688",
     cyan: "#00BCD4",
     blue: "#2196F3",
-    navy: "#1565C0",
-    indigo: "#3F51B5",
     black: "#212121",
-    dark: "#263238",
-    grey: "#607D8B",
     white: "#FAFAFA",
-    brown: "#795548",
     gold: "#F9A825",
     maroon: "#880E4F"
 };
-const DEFAULT_COLOR = "#9C27B0";
 
 function px() {
     try {
@@ -57,10 +53,7 @@ function px() {
 }
 
 function tmp(ext) {
-    return path.join(
-        os.tmpdir(),
-        "venom_" + crypto.randomBytes(6).toString("hex") + "." + ext
-    );
+    return path.join(os.tmpdir(), "venom_" + crypto.randomBytes(6).toString("hex") + "." + ext);
 }
 
 function loadConfig() {
@@ -98,9 +91,7 @@ function setGroupColor(groupId, value) {
 
 function setGroupAudience(groupId, value) {
     const cfg = loadConfig();
-    cfg[groupId] = Object.assign({}, getGroupSettings(groupId), {
-        audience: value
-    });
+    cfg[groupId] = Object.assign({}, getGroupSettings(groupId), { audience: value });
     saveConfig(cfg);
 }
 
@@ -117,12 +108,7 @@ function pickColor(groupId, inlineColor) {
     if (inlineColor && inlineColor !== "random") return inlineColor;
     const saved = getGroupSettings(groupId).color;
     if (!saved || saved === "random" || inlineColor === "random") {
-        return (
-            "#" +
-            Math.floor(Math.random() * 0xffffff)
-                .toString(16)
-                .padStart(6, "0")
-        );
+        return "#" + Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, "0");
     }
     return resolveColor(saved) || DEFAULT_COLOR;
 }
@@ -157,10 +143,7 @@ async function fetchUserGroups(sock, senderId, forceRefresh) {
 
         const disk = loadGroupsDiskCache();
         if (disk[senderKey] && disk[senderKey].length) {
-            MEMORY_GROUP_CACHE.set(senderKey, {
-                list: disk[senderKey],
-                ts: Date.now()
-            });
+            MEMORY_GROUP_CACHE.set(senderKey, { list: disk[senderKey], ts: Date.now() });
             return disk[senderKey];
         }
     }
@@ -174,20 +157,6 @@ async function fetchUserGroups(sock, senderId, forceRefresh) {
         console.log("[GCSTATUS] Failed to fetch groups:", e.message);
     }
 
-    if (!Object.keys(rawMap).length && sock.chats) {
-        const entries = Object.entries(sock.chats);
-        for (let i = 0; i < entries.length; i++) {
-            const jid = entries[i][0];
-            const chat = entries[i][1];
-            if (String(jid).endsWith("@g.us")) {
-                rawMap[jid] = {
-                    id: jid,
-                    subject: chat.name || chat.subject || jid
-                };
-            }
-        }
-    }
-
     const groups = Object.values(rawMap || {})
         .map(function (g) {
             return {
@@ -199,9 +168,7 @@ async function fetchUserGroups(sock, senderId, forceRefresh) {
             return a.name.localeCompare(b.name);
         });
 
-    for (let i = 0; i < groups.length; i++) {
-        groups[i].index = i + 1;
-    }
+    for (let i = 0; i < groups.length; i++) groups[i].index = i + 1;
 
     if (groups.length) {
         MEMORY_GROUP_CACHE.set(senderKey, { list: groups, ts: Date.now() });
@@ -259,53 +226,117 @@ async function convertToVoice(buffer) {
         );
         return fs.readFileSync(output);
     } finally {
-        try {
-            fs.unlinkSync(input);
-        } catch (e) {}
-        try {
-            fs.unlinkSync(output);
-        } catch (e) {}
+        try { fs.unlinkSync(input); } catch (e) {}
+        try { fs.unlinkSync(output); } catch (e) {}
     }
 }
 
-async function postGroupStatus(sock, jid, content, color, audience) {
-    audience = audience || "all";
-    const statusSourceType = content.text
-        ? "TEXT"
-        : content.image
-          ? "IMAGE"
-          : content.video
-            ? "VIDEO"
-            : content.audio
-              ? "AUDIO"
-              : content.sticker
-                ? "IMAGE"
-                : "TEXT";
+function argbFromHex(hex) {
+    const h = String(hex || DEFAULT_COLOR).replace("#", "");
+    const full = h.length === 6 ? "FF" + h : h;
+    return parseInt(full, 16) >>> 0;
+}
 
-    const payload = Object.assign({}, content, {
-        contextInfo: {
-            isGroupStatus: true,
-            statusSourceType: statusSourceType,
-            statusAttributions: [{ type: 10 }],
-            statusAudienceMetadata: {
-                audienceType: audience === "close" ? "CLOSE_FRIENDS" : "ALL"
-            }
-        }
-    });
+/**
+ * Real group-status style post:
+ * 1) upload media with prepareWAMessageMedia
+ * 2) build WA message
+ * 3) relay with status audience metadata
+ */
+async function postGroupStatus(sock, jid, content, color) {
+    const userJid = sock.user && (sock.user.id || sock.user.jid);
+    let node = null;
 
     if (content.text) {
-        payload.backgroundColor = color || DEFAULT_COLOR;
+        node = {
+            extendedTextMessage: {
+                text: content.text
+            }
+        };
+    } else if (content.image) {
+        const prepared = await prepareWAMessageMedia(
+            { image: content.image },
+            { upload: sock.waUploadToServer }
+        );
+        node = {
+            imageMessage: Object.assign({}, prepared.imageMessage, {
+                caption: content.caption || ""
+            })
+        };
+    } else if (content.video) {
+        const prepared = await prepareWAMessageMedia(
+            { video: content.video },
+            { upload: sock.waUploadToServer }
+        );
+        node = {
+            videoMessage: Object.assign({}, prepared.videoMessage, {
+                caption: content.caption || ""
+            })
+        };
+    } else if (content.audio) {
+        const prepared = await prepareWAMessageMedia(
+            {
+                audio: content.audio,
+                mimetype: content.mimetype || "audio/ogg; codecs=opus",
+                ptt: true
+            },
+            { upload: sock.waUploadToServer }
+        );
+        node = {
+            audioMessage: Object.assign({}, prepared.audioMessage, {
+                ptt: true,
+                mimetype: content.mimetype || "audio/ogg; codecs=opus"
+            })
+        };
+    } else if (content.sticker) {
+        const prepared = await prepareWAMessageMedia(
+            { sticker: content.sticker },
+            { upload: sock.waUploadToServer }
+        );
+        node = {
+            stickerMessage: prepared.stickerMessage
+        };
+    } else {
+        throw new Error("Empty status content");
     }
 
-    return sock.sendMessage(jid, payload);
+    // Attach group-status context
+    const mediaKey = Object.keys(node)[0];
+    if (node[mediaKey]) {
+        node[mediaKey].contextInfo = Object.assign({}, node[mediaKey].contextInfo || {}, {
+            isGroupStatus: true,
+            statusSourceType: content.text
+                ? "TEXT"
+                : content.image
+                  ? "IMAGE"
+                  : content.video
+                    ? "VIDEO"
+                    : content.audio
+                      ? "AUDIO"
+                      : "IMAGE"
+        });
+    }
+
+    if (content.text && node.extendedTextMessage) {
+        // text status color support where possible
+        node.extendedTextMessage.backgroundArgb = argbFromHex(color || DEFAULT_COLOR);
+    }
+
+    const waMsg = generateWAMessageFromContent(jid, node, {
+        userJid: userJid
+    });
+
+    await sock.relayMessage(jid, waMsg.message, {
+        messageId: waMsg.key.id
+    });
+
+    return waMsg;
 }
 
 function isSudoUser(sender) {
     try {
         const sudo = require("./sudo");
-        if (sudo.isSudoNumber) {
-            return sudo.isSudoNumber(sender);
-        }
+        if (sudo.isSudoNumber) return sudo.isSudoNumber(sender);
     } catch (e) {}
     return false;
 }
@@ -326,15 +357,11 @@ module.exports = {
     }) {
         const p = px();
         const allowed = isOwner || isSudoUser(sender);
-        if (!allowed) {
-            return reply("🚫 Owner / Sudo only.");
-        }
+        if (!allowed) return reply("🚫 Owner / Sudo only.");
 
         const now = Date.now();
         if (userCooldown.has(sender) && now - userCooldown.get(sender) < COOLDOWN_MS) {
-            const left = Math.ceil(
-                (COOLDOWN_MS - (now - userCooldown.get(sender))) / 1000
-            );
+            const left = Math.ceil((COOLDOWN_MS - (now - userCooldown.get(sender))) / 1000);
             return reply("⏳ Wait *" + left + "s* before using this again.");
         }
 
@@ -348,28 +375,17 @@ module.exports = {
 
         if (!text && !quoted) {
             return reply(
-`╭━━〔 📢 GROUP STATUS 〕━━⬣
-
-Text:
-${p}gcstatus Hello world
-${p}gcstatus 1,3,5 Hello
-${p}gcstatus all Announcement
-
-Media: reply to image/video/audio/sticker
-${p}gcstatus 1,2
-${p}gcstatus all
-
-Colors:
-${p}gcstatus --color gold Hello
-${p}gcstatus --color random Hello
-
-Settings:
-${p}gcstatus list
-${p}gcstatus setcolor purple
-${p}gcstatus setaudience close
-
-Owner + Sudo only
-╰━━━━━━━━━━━━━━━━⬣`
+"╭━━〔 📢 GROUP STATUS 〕━━⬣\n\n" +
+"Text:\n" +
+p + "gcstatus Hello world\n" +
+p + "gcstatus 1,3,5 Hello\n\n" +
+"Media: reply image/video/audio/sticker\n" +
+p + "gcstatus\n" +
+p + "gcstatus all\n\n" +
+"Extra:\n" +
+p + "gcstatus list\n" +
+p + "gcstatus setcolor purple\n" +
+"╰━━━━━━━━━━━━━━━━⬣"
             );
         }
 
@@ -382,13 +398,11 @@ Owner + Sudo only
                 })
                 .join("\n");
             return reply(
-`╭━━〔 📋 YOUR GROUPS 〕━━⬣
-│ Total: *${list.length}*
-│
-${formatted}
-│
-│ Usage: ${p}gcstatus 1,3,5 text
-╰━━━━━━━━━━━━━━━━⬣`
+"╭━━〔 📋 YOUR GROUPS 〕━━⬣\n" +
+"│ Total: *" + list.length + "*\n│\n" +
+formatted + "\n│\n" +
+"│ Usage: " + p + "gcstatus 1,3,5 text\n" +
+"╰━━━━━━━━━━━━━━━━⬣"
             );
         }
 
@@ -402,9 +416,7 @@ ${formatted}
             }
             const resolved = resolveColor(colorName);
             if (!resolved) {
-                return reply(
-                    "❌ Invalid color.\nAvailable: " + Object.keys(COLOR_MAP).join(", ")
-                );
+                return reply("❌ Invalid color.\nAvailable: " + Object.keys(COLOR_MAP).join(", "));
             }
             setGroupColor(from, colorName);
             return reply("✅ Group color saved as *" + colorName + "*");
@@ -447,9 +459,7 @@ ${formatted}
                 const parts = targets.split("-").map(Number);
                 const start = Math.min(parts[0], parts[1]);
                 const end = Math.max(parts[0], parts[1]);
-                for (let i = start; i <= end; i++) {
-                    targetSpecs.push({ type: "index", value: i });
-                }
+                for (let i = start; i <= end; i++) targetSpecs.push({ type: "index", value: i });
             } else if (/^\d+$/.test(targets)) {
                 targetSpecs = [{ type: "index", value: parseInt(targets, 10) }];
             } else if (targets.indexOf("@g.us") !== -1) {
@@ -466,26 +476,19 @@ ${formatted}
         for (let s = 0; s < targetSpecs.length; s++) {
             const spec = targetSpecs[s];
             if (spec.type === "all") {
-                targetJids = groups.map(function (g) {
-                    return g.jid;
-                });
+                targetJids = groups.map(function (g) { return g.jid; });
                 break;
             }
             if (spec.type === "jid") targetJids.push(spec.value);
             if (spec.type === "index") {
-                const found = groups.find(function (g) {
-                    return g.index === spec.value;
-                });
+                const found = groups.find(function (g) { return g.index === spec.value; });
                 if (found) targetJids.push(found.jid);
             }
         }
 
         targetJids = Array.from(new Set(targetJids));
-
         if (!targetJids.length) {
-            return reply(
-                "❌ No valid groups.\nUse *" + p + "gcstatus list* first."
-            );
+            return reply("❌ No valid groups.\nUse *" + p + "gcstatus list* first.");
         }
 
         let content = {};
@@ -493,13 +496,11 @@ ${formatted}
             if (quoted) {
                 const mediaPayload = unwrapMessage(quoted);
                 const type = getMediaType(mediaPayload);
-                if (!type) {
-                    return reply("❌ Reply to an image, video, audio or sticker.");
-                }
+                if (!type) return reply("❌ Reply to an image, video, audio or sticker.");
+
                 const buffer = await downloadMedia(mediaPayload, type);
-                if (!buffer || !buffer.length) {
-                    throw new Error("Failed to download media");
-                }
+                if (!buffer || !buffer.length) throw new Error("Failed to download media");
+
                 if (type === "audio") {
                     const voice = await convertToVoice(buffer);
                     content = {
@@ -515,9 +516,7 @@ ${formatted}
                     content.caption = contentText || "";
                 }
             } else {
-                if (!contentText) {
-                    return reply("❌ Provide text or reply to media.");
-                }
+                if (!contentText) return reply("❌ Provide text or reply to media.");
                 content = { text: contentText };
             }
         } catch (err) {
@@ -530,36 +529,30 @@ ${formatted}
 
         let success = 0;
         let failed = 0;
+        const errors = [];
 
         for (let i = 0; i < targetJids.length; i++) {
             const jid = targetJids[i];
             try {
                 const color = pickColor(jid, inlineColor);
-                const audience = getGroupSettings(jid).audience || "all";
-                await postGroupStatus(sock, jid, content, color, audience);
+                await postGroupStatus(sock, jid, content, color);
                 success++;
             } catch (e) {
                 console.log("[GCSTATUS] Failed on " + jid + ":", e.message);
                 failed++;
+                errors.push(e.message);
             }
             if (targetJids.length > 1) {
-                await new Promise(function (r) {
-                    setTimeout(r, 800);
-                });
+                await new Promise(function (r) { setTimeout(r, 900); });
             }
         }
 
         return reply(
             "✅ *Group Status Posted!*\n\n" +
-                "• Success: *" +
-                success +
-                "*\n" +
-                "• Failed: *" +
-                failed +
-                "*\n" +
-                "• Total: *" +
-                targetJids.length +
-                "*"
+                "• Success: *" + success + "*\n" +
+                "• Failed: *" + failed + "*\n" +
+                "• Total: *" + targetJids.length + "*" +
+                (failed && errors[0] ? "\n\n⚠️ " + errors[0] : "")
         );
     }
 };
