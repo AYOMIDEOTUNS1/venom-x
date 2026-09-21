@@ -85,6 +85,10 @@ module.exports = function (sock) {
         wordchain: "🔤",
         wc: "🔤",
         sudo: "👑",
+        bird: "🐤",
+        flap: "🐤",
+        snake: "🐍",
+        ttt: "🎮",
         default: "⚙️"
     };
 
@@ -157,19 +161,38 @@ module.exports = function (sock) {
             content = content.viewOnceMessageV2.message;
         }
 
+        var buttonId =
+            (content.buttonsResponseMessage &&
+                content.buttonsResponseMessage.selectedButtonId) ||
+            (content.templateButtonReplyMessage &&
+                content.templateButtonReplyMessage.selectedId) ||
+            (content.listResponseMessage &&
+                content.listResponseMessage.singleSelectReply &&
+                content.listResponseMessage.singleSelectReply.selectedRowId) ||
+            "";
+
+        // New WhatsApp interactive button taps
+        if (
+            content.interactiveResponseMessage &&
+            content.interactiveResponseMessage.nativeFlowResponseMessage &&
+            content.interactiveResponseMessage.nativeFlowResponseMessage.paramsJson
+        ) {
+            try {
+                var parsed = JSON.parse(
+                    content.interactiveResponseMessage.nativeFlowResponseMessage.paramsJson
+                );
+                buttonId = parsed.id || parsed.selectedId || buttonId;
+            } catch (e) {}
+        }
+
+        if (buttonId) return String(buttonId).trim();
+
         return String(
             content.conversation ||
                 (content.extendedTextMessage && content.extendedTextMessage.text) ||
                 (content.imageMessage && content.imageMessage.caption) ||
                 (content.videoMessage && content.videoMessage.caption) ||
                 (content.documentMessage && content.documentMessage.caption) ||
-                (content.buttonsResponseMessage &&
-                    content.buttonsResponseMessage.selectedButtonId) ||
-                (content.listResponseMessage &&
-                    content.listResponseMessage.singleSelectReply &&
-                    content.listResponseMessage.singleSelectReply.selectedRowId) ||
-                (content.templateButtonReplyMessage &&
-                    content.templateButtonReplyMessage.selectedId) ||
                 ""
         ).trim();
     }
@@ -240,14 +263,11 @@ module.exports = function (sock) {
             );
 
             const isSudo = isSudoSender(msg, sender, senderPn, participantPn);
-
-            // Owner OR sudo can use bot in private mode / privileged cmds
             const isPrivileged = isOwner || isSudo;
 
             const allowSelf = settings.allowSelf !== false;
             if (msg.key.fromMe && !allowSelf && !isOwner) return;
 
-            // Autoreact (non-blocking)
             setImmediate(function () {
                 try {
                     const ar = require("../commands/autoreact");
@@ -257,7 +277,6 @@ module.exports = function (sock) {
                 } catch (e) {}
             });
 
-            // Group protections (non-blocking)
             if (isGroup) {
                 setImmediate(function () {
                     try {
@@ -277,7 +296,6 @@ module.exports = function (sock) {
                 });
             }
 
-            // Sticker collector (non-blocking)
             if (!msg.key.fromMe) {
                 setImmediate(function () {
                     (async function () {
@@ -300,10 +318,7 @@ module.exports = function (sock) {
                             const { downloadContentFromMessage } = require("@whiskeysockets/baileys");
                             const stickerCollector = require("../lib/stickerCollector");
 
-                            const stream = await downloadContentFromMessage(
-                                stickerMsg,
-                                "sticker"
-                            );
+                            const stream = await downloadContentFromMessage(stickerMsg, "sticker");
                             const chunks = [];
                             for await (const chunk of stream) chunks.push(chunk);
                             stickerCollector.addSticker(from, Buffer.concat(chunks));
@@ -398,7 +413,6 @@ module.exports = function (sock) {
                 return;
             }
 
-            // Private mode: owner OR sudo
             if (
                 String(settings.mode || "").toLowerCase() === "private" &&
                 !isPrivileged

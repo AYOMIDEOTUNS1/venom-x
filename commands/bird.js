@@ -1,14 +1,15 @@
 /**
- * VENOM X Flappy Bird - Responsive live board
- * #bird      → start
- * #flap      → jump
- * #birdquit  → end
+ * VENOM X Flappy Bird
+ * Image board + tappable buttons
  */
+
+const Jimp = require("jimp");
 
 const games = new Map();
 
 const W = 12;
 const H = 8;
+const CELL = 32;
 const GRAVITY = 1;
 const FLAP = -2;
 const PIPE_GAP = 3;
@@ -25,75 +26,66 @@ function newGame() {
         score: 0,
         best: 0,
         alive: true,
-        tick: 0,
-        msgKey: null
+        tick: 0
     };
 }
 
-function drawBoard(state) {
-    const grid = [];
-    for (let y = 0; y < H; y++) {
-        const row = [];
-        for (let x = 0; x < W; x++) row.push("sky");
-        grid.push(row);
+function hex(n) {
+    return Jimp.cssColorToHex(n);
+}
+
+async function renderImage(state) {
+    const img = new Jimp(W * CELL, H * CELL, hex("#4FC3F7"));
+
+    img.scan(0, 0, img.bitmap.width, img.bitmap.height, function (x, y, idx) {
+        const t = y / img.bitmap.height;
+        this.bitmap.data[idx] = 79 + Math.floor(t * 40);
+        this.bitmap.data[idx + 1] = 195 - Math.floor(t * 30);
+        this.bitmap.data[idx + 2] = 247 - Math.floor(t * 20);
+        this.bitmap.data[idx + 3] = 255;
+    });
+
+    function fillRect(x, y, w, h, color) {
+        for (let yy = y; yy < y + h; yy++) {
+            for (let xx = x; xx < x + w; xx++) {
+                if (xx >= 0 && yy >= 0 && xx < img.bitmap.width && yy < img.bitmap.height) {
+                    img.setPixelColor(color, xx, yy);
+                }
+            }
+        }
     }
 
+    const pipe = hex("#43A047");
+    const pipeDark = hex("#2E7D32");
+    const bird = hex("#FDD835");
+    const beak = hex("#FB8C00");
+
     for (let p = 0; p < state.pipes.length; p++) {
-        const pipe = state.pipes[p];
+        const pipeObj = state.pipes[p];
         for (let y = 0; y < H; y++) {
-            if (y < pipe.gapY || y >= pipe.gapY + PIPE_GAP) {
-                if (pipe.x >= 0 && pipe.x < W) grid[y][pipe.x] = "pipe";
-                if (pipe.x + 1 >= 0 && pipe.x + 1 < W) grid[y][pipe.x + 1] = "pipe";
+            if (y < pipeObj.gapY || y >= pipeObj.gapY + PIPE_GAP) {
+                fillRect(pipeObj.x * CELL, y * CELL, CELL * 2 - 4, CELL, pipe);
+                fillRect(pipeObj.x * CELL, y * CELL, 4, CELL, pipeDark);
             }
         }
     }
 
     const by = Math.max(0, Math.min(H - 1, Math.round(state.birdY)));
-    grid[by][2] = "bird";
+    fillRect(2 * CELL + 6, by * CELL + 6, CELL - 12, CELL - 12, bird);
+    fillRect(2 * CELL + CELL - 14, by * CELL + 12, 10, 8, beak);
 
-    const lines = [];
-    for (let y = 0; y < H; y++) {
-        let line = "";
-        for (let x = 0; x < W; x++) {
-            const c = grid[y][x];
-            if (c === "bird") line += "🐤";
-            else if (c === "pipe") line += "🟩";
-            else line += "🟦";
-        }
-        lines.push(line);
-    }
-    return lines.join("\n");
+    return img.quality(80).getBufferAsync(Jimp.MIME_JPEG);
 }
 
-function render(state) {
-    const board = drawBoard(state);
+function caption(state) {
     if (!state.alive) {
-        return (
-"╭━━━━━━━━━━━━━━━━━━╮\n" +
-"┃  🐤 *VENOM FLAPPY*  ┃\n" +
-"╰━━━━━━━━━━━━━━━━━━╯\n\n" +
-board + "\n\n" +
-"💀 *GAME OVER*\n" +
-"🏆 Score: *" + state.score + "*\n" +
-"⭐ Best: *" + state.best + "*\n\n" +
-"▶️ Play again: *#bird*"
-        );
+        return "🐤 *VENOM FLAPPY*\n\n💀 Game Over\n🏆 Score: *" + state.score + "*\n⭐ Best: *" + state.best + "*\n\nTap *PLAY AGAIN*";
     }
-
-    return (
-"╭━━━━━━━━━━━━━━━━━━╮\n" +
-"┃  🐤 *VENOM FLAPPY*  ┃\n" +
-"╰━━━━━━━━━━━━━━━━━━╯\n\n" +
-board + "\n\n" +
-"🏆 Score: *" + state.score + "*   ⭐ Best: *" + state.best + "*\n\n" +
-"▶️ *#flap* to jump\n" +
-"🛑 *#birdquit* to stop"
-    );
+    return "🐤 *VENOM FLAPPY*\n\n🏆 Score: *" + state.score + "*   ⭐ Best: *" + state.best + "*\n\nTap *FLAP* to jump";
 }
 
 function step(state, flap) {
     if (!state.alive) return state;
-
     if (flap) state.birdV = FLAP;
     state.birdV += GRAVITY;
     state.birdY += state.birdV * 0.5;
@@ -128,40 +120,44 @@ function step(state, flap) {
             }
         }
     }
-
     return state;
 }
 
-async function sendOrEdit(sock, from, state, quoted) {
-    const body = render(state);
+async function sendBoard(sock, from, state, quoted) {
+    const buf = await renderImage(state);
 
-    if (state.msgKey) {
-        try {
-            await sock.sendMessage(from, {
-                text: body,
-                edit: state.msgKey
-            });
-            return;
-        } catch (e) {}
+    const buttons = state.alive
+        ? [
+            { buttonId: "#flap", buttonText: { displayText: "🐤 FLAP" }, type: 1 },
+            { buttonId: "#birdquit", buttonText: { displayText: "🛑 QUIT" }, type: 1 }
+        ]
+        : [
+            { buttonId: "#bird", buttonText: { displayText: "▶️ PLAY AGAIN" }, type: 1 }
+        ];
+
+    try {
+        await sock.sendMessage(
+            from,
+            {
+                image: buf,
+                caption: caption(state),
+                footer: "VENOM X Arcade",
+                buttons: buttons,
+                headerType: 4
+            },
+            quoted ? { quoted: quoted } : undefined
+        );
+    } catch (e) {
+        // fallback if buttons are blocked by WhatsApp
+        await sock.sendMessage(
+            from,
+            {
+                image: buf,
+                caption: caption(state) + "\n\nOr type *#flap*"
+            },
+            quoted ? { quoted: quoted } : undefined
+        );
     }
-
-    const sent = await sock.sendMessage(
-        from,
-        {
-            text: body,
-            contextInfo: {
-                externalAdReply: {
-                    title: "🐤 VENOM FLAPPY",
-                    body: state.alive ? ("Score " + state.score) : ("Game Over • " + state.score),
-                    mediaType: 1,
-                    sourceUrl: "https://whatsapp.com"
-                }
-            }
-        },
-        quoted ? { quoted: quoted } : undefined
-    );
-
-    if (sent && sent.key) state.msgKey = sent.key;
 }
 
 module.exports = {
@@ -185,13 +181,13 @@ module.exports = {
             }
             state = step(state, true);
             games.set(id, state);
-            await sendOrEdit(sock, from, state, message);
+            await sendBoard(sock, from, state, message);
             return;
         }
 
         const state = newGame();
         step(state, false);
         games.set(id, state);
-        await sendOrEdit(sock, from, state, message);
+        await sendBoard(sock, from, state, message);
     }
 };
