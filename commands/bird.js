@@ -1,9 +1,9 @@
 /**
  * VENOM X Flappy Bird
- * Image board + buttons (Jimp 0.22)
+ * Image board (Jimp v1 / Baileys compatible)
  */
 
-const Jimp = require("jimp");
+const { Jimp } = require("jimp");
 
 const games = new Map();
 
@@ -30,45 +30,61 @@ function newGame() {
     };
 }
 
+function rgba(hex) {
+    const h = String(hex).replace("#", "");
+    const full = h.length === 6 ? h + "FF" : h;
+    return parseInt(full, 16) >>> 0;
+}
+
 async function renderImage(state) {
-    const img = new Jimp(W * CELL, H * CELL, "#4FC3F7");
+    const img = new Jimp({
+        width: W * CELL,
+        height: H * CELL,
+        color: rgba("#4FC3F7")
+    });
+
+    const pipe = rgba("#43A047");
+    const pipeDark = rgba("#2E7D32");
+    const bird = rgba("#FDD835");
+    const beak = rgba("#FB8C00");
+
+    // sky
+    for (let y = 0; y < H * CELL; y++) {
+        const t = y / (H * CELL);
+        const r = Math.floor(79 + t * 40);
+        const g = Math.floor(195 - t * 30);
+        const b = Math.floor(247 - t * 20);
+        const col = (((r & 255) << 24) | ((g & 255) << 16) | ((b & 255) << 8) | 255) >>> 0;
+        for (let x = 0; x < W * CELL; x++) {
+            img.setPixelColor(col, x, y);
+        }
+    }
 
     function fillRect(x, y, w, h, color) {
         for (let yy = y; yy < y + h; yy++) {
             for (let xx = x; xx < x + w; xx++) {
-                if (xx >= 0 && yy >= 0 && xx < img.bitmap.width && yy < img.bitmap.height) {
-                    img.setPixelColor(Jimp.cssColorToHex(color), xx, yy);
+                if (xx >= 0 && yy >= 0 && xx < W * CELL && yy < H * CELL) {
+                    img.setPixelColor(color, xx, yy);
                 }
             }
         }
     }
 
-    // soft sky
-    img.scan(0, 0, img.bitmap.width, img.bitmap.height, function (x, y, idx) {
-        const t = y / img.bitmap.height;
-        this.bitmap.data[idx] = 79 + Math.floor(t * 40);
-        this.bitmap.data[idx + 1] = 195 - Math.floor(t * 30);
-        this.bitmap.data[idx + 2] = 247 - Math.floor(t * 20);
-        this.bitmap.data[idx + 3] = 255;
-    });
-
-    // pipes
     for (let p = 0; p < state.pipes.length; p++) {
         const pipeObj = state.pipes[p];
         for (let y = 0; y < H; y++) {
             if (y < pipeObj.gapY || y >= pipeObj.gapY + PIPE_GAP) {
-                fillRect(pipeObj.x * CELL, y * CELL, CELL * 2 - 4, CELL, "#43A047");
-                fillRect(pipeObj.x * CELL, y * CELL, 4, CELL, "#2E7D32");
+                fillRect(pipeObj.x * CELL, y * CELL, CELL * 2 - 4, CELL, pipe);
+                fillRect(pipeObj.x * CELL, y * CELL, 4, CELL, pipeDark);
             }
         }
     }
 
-    // bird
     const by = Math.max(0, Math.min(H - 1, Math.round(state.birdY)));
-    fillRect(2 * CELL + 6, by * CELL + 6, CELL - 12, CELL - 12, "#FDD835");
-    fillRect(2 * CELL + CELL - 14, by * CELL + 12, 10, 8, "#FB8C00");
+    fillRect(2 * CELL + 6, by * CELL + 6, CELL - 12, CELL - 12, bird);
+    fillRect(2 * CELL + CELL - 14, by * CELL + 12, 10, 8, beak);
 
-    return img.quality(80).getBufferAsync(Jimp.MIME_JPEG);
+    return img.getBuffer("image/jpeg");
 }
 
 function caption(state) {
@@ -132,36 +148,14 @@ function step(state, flap) {
 
 async function sendBoard(sock, from, state, quoted) {
     const buf = await renderImage(state);
-
-    try {
-        await sock.sendMessage(
-            from,
-            {
-                image: buf,
-                caption: caption(state),
-                footer: "VENOM X Arcade",
-                buttons: state.alive
-                    ? [
-                        { buttonId: "#flap", buttonText: { displayText: "🐤 FLAP" }, type: 1 },
-                        { buttonId: "#birdquit", buttonText: { displayText: "🛑 QUIT" }, type: 1 }
-                      ]
-                    : [
-                        { buttonId: "#bird", buttonText: { displayText: "▶️ PLAY AGAIN" }, type: 1 }
-                      ],
-                headerType: 4
-            },
-            quoted ? { quoted: quoted } : undefined
-        );
-    } catch (e) {
-        await sock.sendMessage(
-            from,
-            {
-                image: buf,
-                caption: caption(state)
-            },
-            quoted ? { quoted: quoted } : undefined
-        );
-    }
+    await sock.sendMessage(
+        from,
+        {
+            image: buf,
+            caption: caption(state)
+        },
+        quoted ? { quoted: quoted } : undefined
+    );
 }
 
 module.exports = {
