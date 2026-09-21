@@ -16,19 +16,43 @@ function spawnFood(snake) {
     }
 }
 
-function draw(state) {
+function drawBoard(state) {
     let out = "";
     for (let y = 0; y < H; y++) {
         for (let x = 0; x < W; x++) {
             if (state.food.x === x && state.food.y === y) out += "🍎";
             else if (state.snake[0].x === x && state.snake[0].y === y) out += "🟢";
-            else if (state.snake.some(function (s) { return s.x === x && s.y === y; }))
-                out += "🟩";
+            else if (state.snake.some(function (s) { return s.x === x && s.y === y; })) out += "🟩";
             else out += "⬛";
         }
         out += "\n";
     }
-    return out;
+    return out.trim();
+}
+
+function render(state) {
+    if (!state.alive) {
+        return (
+"╭━━━━━━━━━━━━━━━━━━╮\n" +
+"┃   🐍 *VENOM SNAKE*   ┃\n" +
+"╰━━━━━━━━━━━━━━━━━━╯\n\n" +
+drawBoard(state) + "\n\n" +
+"💀 *GAME OVER*\n" +
+"🏆 Score: *" + state.score + "*\n\n" +
+"▶️ Play again: *#snake*"
+        );
+    }
+
+    return (
+"╭━━━━━━━━━━━━━━━━━━╮\n" +
+"┃   🐍 *VENOM SNAKE*   ┃\n" +
+"╰━━━━━━━━━━━━━━━━━━╯\n\n" +
+drawBoard(state) + "\n\n" +
+"🏆 Score: *" + state.score + "*\n\n" +
+"⬆️ *#snake u*  ⬇️ *#snake d*\n" +
+"⬅️ *#snake l*  ➡️ *#snake r*\n" +
+"🛑 *#snake end*"
+    );
 }
 
 function move(state, dir) {
@@ -57,15 +81,45 @@ function move(state, dir) {
     return state;
 }
 
+async function sendOrEdit(sock, from, state, quoted) {
+    const body = render(state);
+
+    if (state.msgKey) {
+        try {
+            await sock.sendMessage(from, { text: body, edit: state.msgKey });
+            return;
+        } catch (e) {}
+    }
+
+    const sent = await sock.sendMessage(
+        from,
+        {
+            text: body,
+            contextInfo: {
+                externalAdReply: {
+                    title: "🐍 VENOM SNAKE",
+                    body: state.alive ? ("Score " + state.score) : ("Game Over • " + state.score),
+                    mediaType: 1,
+                    sourceUrl: "https://whatsapp.com"
+                }
+            }
+        },
+        quoted ? { quoted: quoted } : undefined
+    );
+
+    if (sent && sent.key) state.msgKey = sent.key;
+}
+
 module.exports = {
     name: "snake",
     aliases: ["snakegame"],
 
-    run: async function ({ from, sender, args, reply }) {
+    run: async function ({ sock, from, sender, args, reply, message }) {
         const id = key(from, sender);
         const sub = String(args[0] || "").toLowerCase();
 
         if (sub === "end" || sub === "quit") {
+            if (!games.has(id)) return reply("No active snake game.");
             games.delete(id);
             return reply("🛑 Snake ended.");
         }
@@ -76,18 +130,12 @@ module.exports = {
                 snake: snake,
                 food: spawnFood(snake),
                 score: 0,
-                alive: true
+                alive: true,
+                msgKey: null
             };
             games.set(id, state);
-            return reply(
-`🐍 *Snake*
-
-${draw(state)}
-Score: 0
-
-Moves: *#snake u/d/l/r*
-Stop: *#snake end*`
-            );
+            await sendOrEdit(sock, from, state, message);
+            return;
         }
 
         if (["u", "d", "l", "r", "up", "down", "left", "right"].indexOf(sub) === -1) {
@@ -95,7 +143,7 @@ Stop: *#snake end*`
         }
 
         let state = games.get(id);
-        if (!state || !state.alive) return reply("Start: *#snake*");
+        if (!state || !state.alive) return reply("Start with *#snake*");
 
         const dir =
             sub === "up" ? "u" :
@@ -107,12 +155,11 @@ Stop: *#snake end*`
         games.set(id, state);
 
         if (!state.alive) {
+            await sendOrEdit(sock, from, state, message);
             games.delete(id);
-            return reply("💀 *Game Over!*\nScore: *" + state.score + "*\n#snake to retry");
+            return;
         }
 
-        return reply(
-            draw(state) + "\nScore: *" + state.score + "*\n#snake u/d/l/r"
-        );
+        await sendOrEdit(sock, from, state, message);
     }
 };

@@ -1,11 +1,11 @@
 /**
- * Interactive Flappy-style game for WhatsApp (turn-based)
- * #bird  → start
- * #flap  → jump
- * #birdquit → end
+ * VENOM X Flappy Bird - Responsive live board
+ * #bird      → start
+ * #flap      → jump
+ * #birdquit  → end
  */
 
-const games = new Map(); // from -> state
+const games = new Map();
 
 const W = 12;
 const H = 8;
@@ -25,11 +25,12 @@ function newGame() {
         score: 0,
         best: 0,
         alive: true,
-        tick: 0
+        tick: 0,
+        msgKey: null
     };
 }
 
-function draw(state) {
+function drawBoard(state) {
     const grid = [];
     for (let y = 0; y < H; y++) {
         const row = [];
@@ -37,7 +38,6 @@ function draw(state) {
         grid.push(row);
     }
 
-    // pipes
     for (let p = 0; p < state.pipes.length; p++) {
         const pipe = state.pipes[p];
         for (let y = 0; y < H; y++) {
@@ -48,7 +48,6 @@ function draw(state) {
         }
     }
 
-    // bird
     const by = Math.max(0, Math.min(H - 1, Math.round(state.birdY)));
     grid[by][2] = "bird";
 
@@ -63,22 +62,32 @@ function draw(state) {
         }
         lines.push(line);
     }
+    return lines.join("\n");
+}
+
+function render(state) {
+    const board = drawBoard(state);
+    if (!state.alive) {
+        return (
+"╭━━━━━━━━━━━━━━━━━━╮\n" +
+"┃  🐤 *VENOM FLAPPY*  ┃\n" +
+"╰━━━━━━━━━━━━━━━━━━╯\n\n" +
+board + "\n\n" +
+"💀 *GAME OVER*\n" +
+"🏆 Score: *" + state.score + "*\n" +
+"⭐ Best: *" + state.best + "*\n\n" +
+"▶️ Play again: *#bird*"
+        );
+    }
 
     return (
-        "╭━━〔 🐤 VENOM X FLAPPY 〕━━⬣\n" +
-        "┃ Score: *" +
-        state.score +
-        "*  Best: *" +
-        state.best +
-        "*\n" +
-        "╰━━━━━━━━━━━━━━━━⬣\n\n" +
-        lines.join("\n") +
-        "\n\n" +
-        (state.alive
-            ? "▶️ *#flap* to jump\n🛑 *#birdquit* to stop"
-            : "💀 *Game Over!*\nScore: *" +
-              state.score +
-              "*\nType *#bird* to play again")
+"╭━━━━━━━━━━━━━━━━━━╮\n" +
+"┃  🐤 *VENOM FLAPPY*  ┃\n" +
+"╰━━━━━━━━━━━━━━━━━━╯\n\n" +
+board + "\n\n" +
+"🏆 Score: *" + state.score + "*   ⭐ Best: *" + state.best + "*\n\n" +
+"▶️ *#flap* to jump\n" +
+"🛑 *#birdquit* to stop"
     );
 }
 
@@ -89,19 +98,14 @@ function step(state, flap) {
     state.birdV += GRAVITY;
     state.birdY += state.birdV * 0.5;
 
-    // move pipes
-    for (let i = 0; i < state.pipes.length; i++) {
-        state.pipes[i].x -= 1;
-    }
+    for (let i = 0; i < state.pipes.length; i++) state.pipes[i].x -= 1;
 
-    // remove off-screen + score
     if (state.pipes.length && state.pipes[0].x < -1) {
         state.pipes.shift();
         state.score += 1;
         if (state.score > state.best) state.best = state.score;
     }
 
-    // spawn
     if (state.tick % 5 === 0) {
         const gapY = 1 + Math.floor(Math.random() * (H - PIPE_GAP - 2));
         state.pipes.push({ x: W - 1, gapY: gapY });
@@ -109,7 +113,6 @@ function step(state, flap) {
 
     state.tick += 1;
 
-    // collisions
     const by = Math.round(state.birdY);
     if (by < 0 || by >= H) {
         state.alive = false;
@@ -129,11 +132,43 @@ function step(state, flap) {
     return state;
 }
 
+async function sendOrEdit(sock, from, state, quoted) {
+    const body = render(state);
+
+    if (state.msgKey) {
+        try {
+            await sock.sendMessage(from, {
+                text: body,
+                edit: state.msgKey
+            });
+            return;
+        } catch (e) {}
+    }
+
+    const sent = await sock.sendMessage(
+        from,
+        {
+            text: body,
+            contextInfo: {
+                externalAdReply: {
+                    title: "🐤 VENOM FLAPPY",
+                    body: state.alive ? ("Score " + state.score) : ("Game Over • " + state.score),
+                    mediaType: 1,
+                    sourceUrl: "https://whatsapp.com"
+                }
+            }
+        },
+        quoted ? { quoted: quoted } : undefined
+    );
+
+    if (sent && sent.key) state.msgKey = sent.key;
+}
+
 module.exports = {
     name: "bird",
     aliases: ["flappy", "flappybird", "flap", "birdquit"],
 
-    run: async function ({ from, sender, reply, commandName }) {
+    run: async function ({ sock, from, sender, reply, commandName, message }) {
         const cmd = String(commandName || "").toLowerCase();
         const id = key(from, sender);
 
@@ -150,18 +185,13 @@ module.exports = {
             }
             state = step(state, true);
             games.set(id, state);
-            return reply(draw(state));
+            await sendOrEdit(sock, from, state, message);
+            return;
         }
 
-        // #bird / #flappy → new game
         const state = newGame();
-        // mild first step so board isn't empty
         step(state, false);
         games.set(id, state);
-        return reply(
-            "🎮 *Flappy started!*\n\n" +
-                draw(state) +
-                "\n\n⚡ VENOM X Arcade"
-        );
+        await sendOrEdit(sock, from, state, message);
     }
 };
