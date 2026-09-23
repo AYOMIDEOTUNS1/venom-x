@@ -1,15 +1,34 @@
 const axios = require("axios");
+const FormData = require("form-data");
+const { downloadMediaMessage } = require("@whiskeysockets/baileys");
+
+// ================================================
+// UPLOAD BUFFER TO CATBOX → RETURN PUBLIC URL
+// ================================================
+async function uploadToCatbox(buffer, filename = "image.jpg", mime = "image/jpeg") {
+    const form = new FormData();
+    form.append("reqtype", "fileupload");
+    form.append("fileToUpload", buffer, { filename, contentType: mime });
+
+    const res = await axios.post(
+        "https://catbox.moe/user/api.php",
+        form,
+        {
+            headers: { ...form.getHeaders() },
+            maxBodyLength: Infinity,
+            timeout: 90000
+        }
+    );
+
+    const url = (res.data || "").trim();
+    if (!url.startsWith("http")) throw new Error("Catbox upload failed.");
+    return url;
+}
 
 module.exports = {
     name: "deepnude",
 
-    aliases: [
-        "dn",
-        "nude",
-        "undress",
-        "removecloth",
-        "rc"
-    ],
+    aliases: ["dn", "nude", "undress", "removecloth", "rc"],
 
     run: async ({
         sock,
@@ -21,29 +40,31 @@ module.exports = {
     }) => {
 
         // ================================================
-        // GET IMAGE URL
+        // GET IMAGE SOURCE
         // ================================================
 
         let imageUrl = "";
+        let quotedImage = null;
 
         if (args.length) {
             const maybeUrl = args.join(" ").trim();
-            if (/^https?:\/\//i.test(maybeUrl)) {
-                imageUrl = maybeUrl;
-            }
+            if (/^https?:\/\//i.test(maybeUrl)) imageUrl = maybeUrl;
         }
 
-        if (!imageUrl) {
+        const context =
+            message?.message?.extendedTextMessage?.contextInfo ||
+            message?.message?.imageMessage?.contextInfo ||
+            message?.message?.videoMessage?.contextInfo ||
+            {};
 
-            const context =
-                message?.message?.extendedTextMessage?.contextInfo ||
-                message?.message?.imageMessage?.contextInfo ||
-                message?.message?.videoMessage?.contextInfo ||
-                {};
+        const quoted = context.quotedMessage;
 
-            const quoted = context.quotedMessage;
+        if (quoted) {
+            if (quoted.imageMessage) {
+                quotedImage = { message: { imageMessage: quoted.imageMessage } };
+            }
 
-            if (quoted) {
+            if (!imageUrl && !quotedImage) {
                 const quotedText =
                     quoted.conversation ||
                     quoted.extendedTextMessage?.text ||
@@ -57,11 +78,17 @@ module.exports = {
             }
         }
 
+        if (!imageUrl && !quotedImage && message?.message?.imageMessage) {
+            quotedImage = {
+                message: { imageMessage: message.message.imageMessage }
+            };
+        }
+
         // ================================================
-        // NO URL
+        // NO SOURCE
         // ================================================
 
-        if (!imageUrl) {
+        if (!imageUrl && !quotedImage) {
             return reply(
 `╭━━〔 👕 VENOM X DEEP NUDE 〕━━⬣
 ┃
@@ -69,67 +96,76 @@ module.exports = {
 ┃ #deepnude <image url>
 ┃
 ┃ Or:
-┃ Reply to a message containing
-┃ an image URL with #deepnude
+┃ Reply to an image with #deepnude
+┃ (auto-uploads via Catbox)
 ┃
 ┃ Aliases:
 ┃ #dn | #nude | #undress | #rc
-┃
-┃ ⚠️ Only public image URLs work.
-┃ Use #url to upload first.
 ╰━━━━━━━━━━━━━━━━⬣`
             );
         }
 
         // ================================================
-        // REACTION: PROCESSING
+        // REACTION
         // ================================================
 
         try {
             await sock.sendMessage(from, {
-                react: {
-                    text: "⏳",
-                    key: message.key
-                }
+                react: { text: "⏳", key: message.key }
             });
         } catch {}
 
         try {
 
             // ============================================
+            // AUTO-UPLOAD IF REPLIED TO IMAGE
+            // ============================================
+
+            if (!imageUrl && quotedImage) {
+
+                const buffer = await downloadMediaMessage(
+                    quotedImage,
+                    "buffer",
+                    {},
+                    {
+                        logger: console,
+                        reuploadRequest: sock.updateMediaMessage
+                    }
+                );
+
+                imageUrl = await uploadToCatbox(
+                    buffer,
+                    `venom_${Date.now()}.jpg`,
+                    "image/jpeg"
+                );
+            }
+
+            // ============================================
             // CALL API
             // ============================================
 
-            const apiUrl =
-                "https://api.omegatech.app/api/tools/remove-cloth";
-
-            const response = await axios.get(apiUrl, {
-                params: { imageUrl },
-                timeout: 90000
-            });
+            const response = await axios.get(
+                "https://api.omegatech.app/api/tools/remove-cloth",
+                {
+                    params: { imageUrl },
+                    timeout: 90000
+                }
+            );
 
             const data = response?.data;
 
             if (!data || data.success === false) {
-                console.log(
-                    "DEEPNUDE API RESPONSE:",
-                    JSON.stringify(data)
-                );
-
+                console.log("DEEPNUDE API:", JSON.stringify(data));
                 return reply(
 `╭━━〔 ❌ VENOM X DEEP NUDE 〕━━⬣
 ┃
-┃ ❌ API rejected the request.
+┃ ❌ API rejected request.
 ┃
 ┃ Reason:
 ┃ ${data?.error || "Unknown error"}
 ╰━━━━━━━━━━━━━━━━⬣`
                 );
             }
-
-            // ============================================
-            // EXTRACT RESULT
-            // ============================================
 
             const resultUrl =
                 data?.result ||
@@ -141,20 +177,9 @@ module.exports = {
                 data?.data;
 
             if (!resultUrl || typeof resultUrl !== "string") {
-
-                console.log(
-                    "DEEPNUDE UNKNOWN FORMAT:",
-                    JSON.stringify(data)
-                );
-
-                return reply(
-                    "❌ API returned an unknown response format."
-                );
+                console.log("DEEPNUDE UNKNOWN:", JSON.stringify(data));
+                return reply("❌ API returned an unknown format.");
             }
-
-            // ============================================
-            // SEND RESULT
-            // ============================================
 
             await sock.sendMessage(
                 from,
@@ -172,26 +197,17 @@ module.exports = {
 
             try {
                 await sock.sendMessage(from, {
-                    react: {
-                        text: "✅",
-                        key: message.key
-                    }
+                    react: { text: "✅", key: message.key }
                 });
             } catch {}
 
         } catch (error) {
 
-            console.error(
-                "DEEPNUDE ERROR:",
-                error.message
-            );
+            console.error("DEEPNUDE ERROR:", error.message);
 
             try {
                 await sock.sendMessage(from, {
-                    react: {
-                        text: "❌",
-                        key: message.key
-                    }
+                    react: { text: "❌", key: message.key }
                 });
             } catch {}
 
