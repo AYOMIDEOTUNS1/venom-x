@@ -1,238 +1,273 @@
+/**
+ * VENOM X - URL tools
+ * #url <link>              → shorten
+ * #url (reply image)       → upload image → get link
+ * #url expand <link>       → expand short link
+ * #url check <link>        → check link
+ */
+
 const axios = require("axios");
 const FormData = require("form-data");
-const { downloadMediaMessage } = require("@whiskeysockets/baileys");
+const { downloadContentFromMessage } = require("@whiskeysockets/baileys");
+
+function extractUrl(text) {
+    const m = String(text || "").match(/(https?:\/\/[^\s]+)/i);
+    return m ? m[0] : null;
+}
+
+function getQuotedImage(message) {
+    const ctx =
+        message.message &&
+        message.message.extendedTextMessage &&
+        message.message.extendedTextMessage.contextInfo
+            ? message.message.extendedTextMessage.contextInfo
+            : null;
+
+    if (!ctx || !ctx.quotedMessage) return null;
+
+    let q = ctx.quotedMessage;
+
+    // unwrap common wrappers
+    for (let i = 0; i < 5; i++) {
+        const wrap =
+            (q && q.viewOnceMessageV2 && q.viewOnceMessageV2.message) ||
+            (q && q.viewOnceMessage && q.viewOnceMessage.message) ||
+            (q && q.ephemeralMessage && q.ephemeralMessage.message) ||
+            (q && q.documentWithCaptionMessage && q.documentWithCaptionMessage.message) ||
+            null;
+        if (!wrap) break;
+        q = wrap;
+    }
+
+    if (q.imageMessage) return q.imageMessage;
+    if (q.stickerMessage) return null; // stickers optional later
+    return null;
+}
+
+async function downloadImage(imageMessage) {
+    const stream = await downloadContentFromMessage(imageMessage, "image");
+    const chunks = [];
+    for await (const chunk of stream) chunks.push(chunk);
+    return Buffer.concat(chunks);
+}
+
+async function uploadImage(buffer) {
+    // 1) try litterbox (simple, no key)
+    try {
+        const form = new FormData();
+        form.append("reqtype", "fileupload");
+        form.append("time", "24h");
+        form.append("fileToUpload", buffer, {
+            filename: "venom.jpg",
+            contentType: "image/jpeg"
+        });
+
+        const { data } = await axios.post(
+            "https://litterbox.catbox.moe/resources/internals/api.php",
+            form,
+            {
+                headers: form.getHeaders(),
+                timeout: 60000
+            }
+        );
+
+        if (typeof data === "string" && data.indexOf("https://") === 0) {
+            return data.trim();
+        }
+    } catch (e) {}
+
+    // 2) fallback: catbox
+    try {
+        const form = new FormData();
+        form.append("reqtype", "fileupload");
+        form.append("fileToUpload", buffer, {
+            filename: "venom.jpg",
+            contentType: "image/jpeg"
+        });
+
+        const { data } = await axios.post(
+            "https://catbox.moe/user/api.php",
+            form,
+            {
+                headers: form.getHeaders(),
+                timeout: 60000
+            }
+        );
+
+        if (typeof data === "string" && data.indexOf("https://") === 0) {
+            return data.trim();
+        }
+    } catch (e) {}
+
+    throw new Error("Image upload failed");
+}
+
+async function shorten(url) {
+    const api =
+        "https://is.gd/create.php?format=json&url=" +
+        encodeURIComponent(url);
+
+    const { data } = await axios.get(api, {
+        timeout: 20000,
+        headers: { "User-Agent": "VENOM-X" }
+    });
+
+    if (data && data.shorturl) return data.shorturl;
+    if (data && data.errormessage) throw new Error(data.errormessage);
+    throw new Error("Shorten failed");
+}
+
+async function expand(url) {
+    const res = await axios.get(url, {
+        timeout: 20000,
+        maxRedirects: 10,
+        validateStatus: function () { return true; },
+        headers: { "User-Agent": "VENOM-X" }
+    });
+
+    const finalUrl =
+        (res.request &&
+            res.request.res &&
+            res.request.res.responseUrl) ||
+        url;
+
+    return {
+        finalUrl: finalUrl,
+        status: res.status
+    };
+}
 
 module.exports = {
     name: "url",
+    aliases: ["shorturl", "shortlink", "tinyurl", "tour"],
 
-    aliases: [
-        "upload",
-        "tourl",
-        "catbox"
-    ],
+    run: async function ({ reply, args, message }) {
+        const sub = String((args && args[0]) || "").toLowerCase();
 
-    run: async ({
-        sock,
-        from,
-        args,
-        reply,
-        message,
-        commandName
-    }) => {
+        // =========================
+        // REPLY TO IMAGE → upload
+        // =========================
+        const imageMsg = getQuotedImage(message);
+        if (imageMsg) {
+            try {
+                await reply("📤 Uploading image...");
+                const buffer = await downloadImage(imageMsg);
+                if (!buffer || !buffer.length) throw new Error("Empty image");
 
-        // ================================================
-        // FIND MEDIA (quoted or direct)
-        // ================================================
+                const link = await uploadImage(buffer);
+                let short = link;
+                try {
+                    short = await shorten(link);
+                } catch (e) {}
 
-        const context =
-            message?.message?.extendedTextMessage?.contextInfo ||
-            message?.message?.imageMessage?.contextInfo ||
-            message?.message?.videoMessage?.contextInfo ||
-            message?.message?.audioMessage?.contextInfo ||
-            message?.message?.documentMessage?.contextInfo ||
-            {};
-
-        const quoted = context.quotedMessage;
-
-        let mediaMessage = null;
-        let mediaType = "file";
-
-        if (quoted) {
-
-            if (quoted.imageMessage) {
-                mediaMessage = { message: { imageMessage: quoted.imageMessage } };
-                mediaType = "image";
-            } else if (quoted.videoMessage) {
-                mediaMessage = { message: { videoMessage: quoted.videoMessage } };
-                mediaType = "video";
-            } else if (quoted.audioMessage) {
-                mediaMessage = { message: { audioMessage: quoted.audioMessage } };
-                mediaType = "audio";
-            } else if (quoted.documentMessage) {
-                mediaMessage = { message: { documentMessage: quoted.documentMessage } };
-                mediaType = "document";
+                return reply(
+"╭━━〔 🖼️ IMAGE URL 〕━━⬣\n" +
+"┃\n" +
+"┃ ✅ Uploaded\n" +
+"┃\n" +
+"┃ 🔗 Direct:\n" +
+"┃ " + link + "\n" +
+"┃\n" +
+"┃ ✨ Short:\n" +
+"┃ " + short + "\n" +
+"┃\n" +
+"╰━━━━━━━━━━━━━━━━⬣"
+                );
+            } catch (e) {
+                return reply("❌ Image URL failed:\n" + e.message);
             }
         }
 
-        // Also accept media sent directly with the command
-        if (!mediaMessage && message?.message) {
-            const m = message.message;
-            if (m.imageMessage) {
-                mediaMessage = { message: { imageMessage: m.imageMessage } };
-                mediaType = "image";
-            } else if (m.videoMessage) {
-                mediaMessage = { message: { videoMessage: m.videoMessage } };
-                mediaType = "video";
-            } else if (m.audioMessage) {
-                mediaMessage = { message: { audioMessage: m.audioMessage } };
-                mediaType = "audio";
-            } else if (m.documentMessage) {
-                mediaMessage = { message: { documentMessage: m.documentMessage } };
-                mediaType = "document";
-            }
-        }
-
-        // ================================================
-        // NO MEDIA
-        // ================================================
-
-        if (!mediaMessage) {
+        // HELP
+        if (!args || !args.length) {
             return reply(
-`╭━━〔 🔗 VENOM X URL UPLOADER 〕━━⬣
-┃
-┃ Usage:
-┃ Reply to an image / video / audio
-┃ / document with #url
-┃
-┃ Aliases:
-┃ #upload | #tourl | #catbox
-┃
-┃ Returns a public link.
-╰━━━━━━━━━━━━━━━━⬣`
+"╭━━〔 🔗 VENOM URL 〕━━⬣\n" +
+"┃\n" +
+"┃ Reply to image:\n" +
+"┃ #url\n" +
+"┃\n" +
+"┃ Shorten link:\n" +
+"┃ #url https://example.com\n" +
+"┃\n" +
+"┃ Expand:\n" +
+"┃ #url expand <link>\n" +
+"┃\n" +
+"┃ Check:\n" +
+"┃ #url check <link>\n" +
+"┃\n" +
+"╰━━━━━━━━━━━━━━━━⬣"
             );
         }
 
-        // ================================================
-        // REACTION: PROCESSING
-        // ================================================
-
-        try {
-            await sock.sendMessage(from, {
-                react: {
-                    text: "⏳",
-                    key: message.key
-                }
-            });
-        } catch {}
-
-        try {
-
-            // ============================================
-            // DOWNLOAD MEDIA BUFFER
-            // ============================================
-
-            const buffer = await downloadMediaMessage(
-                mediaMessage,
-                "buffer",
-                {},
-                {
-                    logger: console,
-                    reuploadRequest: sock.updateMediaMessage
-                }
-            );
-
-            if (!buffer || !buffer.length) {
-                throw new Error("Failed to download media.");
-            }
-
-            // ============================================
-            // PICK FILENAME + MIME
-            // ============================================
-
-            const extMap = {
-                image: "jpg",
-                video: "mp4",
-                audio: "mp3",
-                document: "bin",
-                file: "bin"
-            };
-
-            const mimeMap = {
-                image: "image/jpeg",
-                video: "video/mp4",
-                audio: "audio/mpeg",
-                document: "application/octet-stream",
-                file: "application/octet-stream"
-            };
-
-            const ext = extMap[mediaType] || "bin";
-            const mime = mimeMap[mediaType] || "application/octet-stream";
-            const filename = `venom_${Date.now()}.${ext}`;
-
-            // ============================================
-            // UPLOAD TO CATBOX
-            // ============================================
-
-            const form = new FormData();
-            form.append("reqtype", "fileupload");
-            form.append("fileToUpload", buffer, {
-                filename,
-                contentType: mime
-            });
-
-            const response = await axios.post(
-                "https://catbox.moe/user/api.php",
-                form,
-                {
-                    headers: {
-                        ...form.getHeaders()
-                    },
-                    maxBodyLength: Infinity,
-                    timeout: 90000
-                }
-            );
-
-            const url = (response.data || "").trim();
-
-            if (!url || !url.startsWith("http")) {
-                console.log("URL UPLOAD RESPONSE:", response.data);
-                throw new Error("Upload failed — no URL returned.");
-            }
-
-            // ============================================
-            // SEND RESULT
-            // ============================================
-
-            await sock.sendMessage(
-                from,
-                {
-                    text:
-`╭━━〔 ✅ VENOM X URL UPLOADER 〕━━⬣
-┃
-┃ 🔗 Link:
-┃ ${url}
-┃
-┃ 📦 Type: ${mediaType}
-┃ ⚡ Powered by : VENOM X
-╰━━━━━━━━━━━━━━━━⬣`
-                },
-                { quoted: message }
-            );
+        // EXPAND
+        if (sub === "expand" || sub === "unshort" || sub === "long") {
+            const link = extractUrl(args.slice(1).join(" "));
+            if (!link) return reply("❌ Provide a short URL.");
 
             try {
-                await sock.sendMessage(from, {
-                    react: {
-                        text: "✅",
-                        key: message.key
-                    }
-                });
-            } catch {}
+                await reply("🔍 Expanding...");
+                const result = await expand(link);
+                return reply(
+"╭━━〔 🔗 URL EXPAND 〕━━⬣\n" +
+"┃\n" +
+"┃ 📎 " + link + "\n" +
+"┃ 🌐 " + result.finalUrl + "\n" +
+"┃ 📡 " + result.status + "\n" +
+"┃\n" +
+"╰━━━━━━━━━━━━━━━━⬣"
+                );
+            } catch (e) {
+                return reply("❌ Expand failed:\n" + e.message);
+            }
+        }
 
-        } catch (error) {
-
-            console.error(
-                "URL UPLOAD ERROR:",
-                error.message
-            );
+        // CHECK
+        if (sub === "check" || sub === "info" || sub === "status") {
+            const link = extractUrl(args.slice(1).join(" "));
+            if (!link) return reply("❌ Provide a URL.");
 
             try {
-                await sock.sendMessage(from, {
-                    react: {
-                        text: "❌",
-                        key: message.key
-                    }
+                await reply("🔍 Checking...");
+                const res = await axios.get(link, {
+                    timeout: 15000,
+                    maxRedirects: 5,
+                    validateStatus: function () { return true; },
+                    headers: { "User-Agent": "VENOM-X" }
                 });
-            } catch {}
 
+                return reply(
+"╭━━〔 🔗 URL CHECK 〕━━⬣\n" +
+"┃\n" +
+"┃ 🌐 " + link + "\n" +
+"┃ 📡 Status: " + res.status + "\n" +
+"┃ 📦 Type: " + (res.headers["content-type"] || "unknown") + "\n" +
+"┃\n" +
+"╰━━━━━━━━━━━━━━━━⬣"
+                );
+            } catch (e) {
+                return reply("❌ Check failed:\n" + e.message);
+            }
+        }
+
+        // SHORTEN text URL
+        const link = extractUrl(args.join(" "));
+        if (!link) {
+            return reply("❌ Provide a valid URL, or reply to an image with #url");
+        }
+
+        try {
+            await reply("⏳ Shortening...");
+            const short = await shorten(link);
             return reply(
-`╭━━〔 ❌ VENOM X URL UPLOADER 〕━━⬣
-┃
-┃ ❌ Upload failed.
-┃
-┃ Reason:
-┃ ${error.message || "Unknown error"}
-╰━━━━━━━━━━━━━━━━⬣`
+"╭━━〔 🔗 URL SHORT 〕━━⬣\n" +
+"┃\n" +
+"┃ 🌐 " + link + "\n" +
+"┃ ✨ " + short + "\n" +
+"┃\n" +
+"╰━━━━━━━━━━━━━━━━⬣"
             );
+        } catch (e) {
+            return reply("❌ Shorten failed:\n" + e.message);
         }
     }
 };

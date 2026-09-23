@@ -1,98 +1,106 @@
 /**
- * 🎯 TikTok Booster
- * Boost TikTok video views & likes
- * 
- * Commands:
+ * TikTok Views Booster - OmegaTech API
  * #tiktokboost <url>
- * #ttboost <url>
- * #boosttiktok <url>
  */
 
-const axios = require('axios');
+const axios = require("axios");
 
 module.exports = {
     name: "tiktokboost",
-    aliases: ["ttboost", "boosttiktok", "ttbooster"],
-    category: "tools",
-    description: "Boost TikTok video views and likes",
+    aliases: ["ttboost", "boosttiktok", "ttviews"],
 
-    run: async ({ sock, from, args, reply, message }) => {
-
-        const text = args.join(' ').trim();
+    run: async function ({ reply, args, message, sock, from }) {
+        const text = (args || []).join(" ").trim();
 
         if (!text) {
-            return reply(`╭━━━『 *TIKTOK BOOSTER* 』━━━
-│
-│  Usage:
-│  ▸ #tiktokboost <TikTok URL>
-│
-│  Example:
-│  ▸ #tiktokboost https://www.tiktok.com/@user/video/123456789
-│
-╰━━━━━━━━━━━━━━━━━━━━
-⚠️ Note: Views & likes take time to appear`);
+            return reply(
+"╭━━〔 📈 TIKTOK BOOST 〕━━⬣\n" +
+"┃\n" +
+"┃ Usage:\n" +
+"┃ #tiktokboost <tiktok url>\n" +
+"┃\n" +
+"┃ Example:\n" +
+"┃ #tiktokboost https://www.tiktok.com/@user/video/123\n" +
+"┃\n" +
+"╰━━━━━━━━━━━━━━━━⬣"
+            );
         }
 
         const urlMatch = text.match(/(https?:\/\/[^\s]+)/i);
         if (!urlMatch) {
-            return reply('❌ Please provide a valid TikTok video link.');
+            return reply("❌ Invalid URL. Send a full TikTok link.");
         }
 
         const tiktokUrl = urlMatch[0];
 
-        if (!tiktokUrl.includes('tiktok.com')) {
-            return reply('❌ Invalid TikTok URL.');
+        if (
+            tiktokUrl.indexOf("tiktok.com") === -1 &&
+            tiktokUrl.indexOf("vm.tiktok.com") === -1 &&
+            tiktokUrl.indexOf("vt.tiktok.com") === -1
+        ) {
+            return reply("❌ Please provide a valid TikTok URL.");
         }
 
-        await reply(`🔄 *Processing...*\n\n📱 Boosting:\n${tiktokUrl}`);
+        await reply("🔄 Sending boost request...\n" + tiktokUrl);
 
         try {
-            const apiUrl = `https://omegatech-api.dixonomega.tech/api/Fun/Tiktok-booster?action=boost&url=${encodeURIComponent(tiktokUrl)}`;
+            const apiUrl =
+                "https://api.omegatech.app/api/tools/tiktok-views?action=send&url=" +
+                encodeURIComponent(tiktokUrl);
 
-            const response = await axios.get(apiUrl, {
-                timeout: 30000
+            const { data } = await axios.get(apiUrl, {
+                timeout: 60000,
+                headers: {
+                    "User-Agent": "VENOM-X"
+                }
             });
 
-            if (!response.data?.success) {
-                throw new Error(response.data?.message || 'API request failed');
+            if (!data) {
+                return reply("❌ Empty response from API.");
             }
 
-            const data = response.data.data || {};
-            const timestamp = response.data.timestamp 
-                ? new Date(response.data.timestamp).toLocaleString() 
-                : new Date().toLocaleString();
-
-            const caption = `🎯 *TIKTOK BOOSTER SUCCESS*
-
-━━━━━━━━━━━━━━━━━━━━
-📹 *Title:* ${data.title || 'Not available'}
-👤 *Author:* ${data.author || 'Unknown'}
-🔗 *Username:* @${data.username || 'Unknown'}
-📊 *Status:* ${data.status || 'Processing'}
-━━━━━━━━━━━━━━━━━━━━
-
-📝 *Note:* Likes and views take time to register.
-
-🕐 *Time:* ${timestamp}
-🔹 *Source:* ${response.data.source || 'Omegatech'}`;
-
-            return reply(caption);
-
-        } catch (error) {
-            console.error('[TIKTOK BOOST]', error.response?.data || error.message);
-
-            let errorMsg = '❌ *Failed to boost TikTok video*\n\n';
-
-            if (error.response) {
-                errorMsg += `📌 Status: ${error.response.status}\n`;
-                errorMsg += `📌 Error: ${error.response.data?.message || 'Unknown error'}`;
-            } else if (error.request) {
-                errorMsg += `📌 No response from server. Try again later.`;
-            } else {
-                errorMsg += `📌 Error: ${error.message}`;
+            // Failed response
+            if (data.success === false) {
+                return reply(
+"╭━━〔 ❌ BOOST FAILED 〕━━⬣\n" +
+"┃\n" +
+"┃ " + (data.error || data.message || "Unknown error") + "\n" +
+"┃\n" +
+"┃ " + (data.note || "Try again later.") + "\n" +
+"┃\n" +
+"╰━━━━━━━━━━━━━━━━⬣"
+                );
             }
 
-            return reply(errorMsg);
+            // Success / processing
+            const title = data.title || data.data?.title || "TikTok Video";
+            const author = data.author || data.data?.author || "Unknown";
+            const status = data.status || data.data?.status || "Processing";
+            const source = data.source || "Omegatech";
+
+            return reply(
+"╭━━〔 📈 TIKTOK BOOST 〕━━⬣\n" +
+"┃\n" +
+"┃ ✅ Request sent\n" +
+"┃\n" +
+"┃ 📹 " + title + "\n" +
+"┃ 👤 " + author + "\n" +
+"┃ 📊 Status: " + status + "\n" +
+"┃\n" +
+"┃ 🔗 " + tiktokUrl + "\n" +
+"┃\n" +
+"┃ 📝 Views can take time to show.\n" +
+"┃ 🔹 Source: " + source + "\n" +
+"┃\n" +
+"╰━━━━━━━━━━━━━━━━⬣"
+            );
+        } catch (err) {
+            console.log("TIKTOK BOOST ERROR:", err.message);
+            const msg =
+                (err.response && err.response.data && (err.response.data.error || err.response.data.message)) ||
+                err.message ||
+                "Request failed";
+            return reply("❌ Boost failed:\n" + msg);
         }
     }
 };
