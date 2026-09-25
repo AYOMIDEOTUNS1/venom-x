@@ -1,5 +1,5 @@
 /**
- * VENOM X - GROUP STATUS (Fixed Upload)
+ * VENOM X - GROUP STATUS (Fixed: real group status via status@broadcast)
  * Text / Image / Video / Audio / Sticker
  */
 "use strict";
@@ -13,7 +13,9 @@ const { promisify } = require("util");
 const {
     downloadContentFromMessage,
     generateWAMessageFromContent,
-    prepareWAMessageMedia
+    generateMessageID,
+    prepareWAMessageMedia,
+    jidNormalizedUser
 } = require("@whiskeysockets/baileys");
 const { getSettings } = require("../lib/settingsCache");
 
@@ -26,6 +28,7 @@ const CACHE_TTL_MS = 10 * 60 * 1000;
 const COOLDOWN_MS = 8000;
 const userCooldown = new Map();
 const DEFAULT_COLOR = "#9C27B0";
+const MAX_MEDIA_BYTES = 16 * 1024 * 1024;
 
 const COLOR_MAP = {
     purple: "#9C27B0",
@@ -69,8 +72,12 @@ function saveConfig(cfg) {
     try {
         const dir = path.dirname(CONFIG_PATH);
         if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-        fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
-    } catch (e) {}
+        const t = CONFIG_PATH + "." + process.pid + ".tmp";
+        fs.writeFileSync(t, JSON.stringify(cfg, null, 2));
+        fs.renameSync(t, CONFIG_PATH);
+    } catch (e) {
+        console.log("[GCSTATUS] saveConfig failed:", e.message);
+    }
 }
 
 function getGroupSettings(groupId) {
@@ -131,7 +138,9 @@ function saveGroupsDiskCache(data) {
         const dir = path.dirname(GROUPS_CACHE_FILE);
         if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
         fs.writeFileSync(GROUPS_CACHE_FILE, JSON.stringify(data, null, 2));
-    } catch (e) {}
+    } catch (e) {
+        console.log("[GCSTATUS] saveGroupsDiskCache failed:", e.message);
+    }
 }
 
 async function fetchUserGroups(sock, senderId, forceRefresh) {
@@ -225,6 +234,9 @@ async function convertToVoice(buffer) {
                 '"'
         );
         return fs.readFileSync(output);
+    } catch (e) {
+        if (e.code === "ENOENT") throw new Error("ffmpeg not installed or not in PATH");
+        throw e;
     } finally {
         try { fs.unlinkSync(input); } catch (e) {}
         try { fs.unlinkSync(output); } catch (e) {}
@@ -238,21 +250,32 @@ function argbFromHex(hex) {
 }
 
 /**
- * Real group-status style post:
- * 1) upload media with prepareWAMessageMedia
- * 2) build WA message
- * 3) relay with status audience metadata
+ * Post a real group status.
+ * Sends to status@broadcast with the group's participants in statusJidList
+ * and a status_setting meta node, instead of faking isGroupStatus on a
+ * normal group relay (which WA silently drops).
  */
-async function postGroupStatus(sock, jid, content, color) {
-    const userJid = sock.user && (sock.user.id || sock.user.jid);
+async function postGroupStatus(sock, groupJid, content, color) {
+    const rawId = (sock.user && (sock.user.id || sock.user.jid)) || "";
+    const userJid = jidNormalizedUser(rawId);
+
+    let participants = [];
+    try {
+        const meta = await sock.groupMetadata(groupJid);
+        participants = (meta.participants || [])
+            .map(function (p) { return jidNormalizedUser(p.id); })
+            .filter(Boolean);
+    } catch (e) {
+        throw new Error("groupMetadata failed: " + e.message);
+    }
+
     let node = null;
+    let statusSourceType = "TEXT";
 
     if (content.text) {
-        node = {
-            extendedTextMessage: {
-                text: content.text
-            }
-        };
+        node = { extendedTextMessage: { text: content.text } };
+        if (color) node.extendedTextMessage.backgroundArgb = argbFromHex(color);
+        statusSourceType = "TEXT";
     } else if (content.image) {
         const prepared = await prepareWAMessageMedia(
             { image: content.image },
@@ -263,6 +286,7 @@ async function postGroupStatus(sock, jid, content, color) {
                 caption: content.caption || ""
             })
         };
+        statusSourceType = "IMAGE";
     } else if (content.video) {
         const prepared = await prepareWAMessageMedia(
             { video: content.video },
@@ -273,6 +297,7 @@ async function postGroupStatus(sock, jid, content, color) {
                 caption: content.caption || ""
             })
         };
+        statusSourceType = "VIDEO";
     } else if (content.audio) {
         const prepared = await prepareWAMessageMedia(
             {
@@ -288,46 +313,47 @@ async function postGroupStatus(sock, jid, content, color) {
                 mimetype: content.mimetype || "audio/ogg; codecs=opus"
             })
         };
+        statusSourceType = "AUDIO";
     } else if (content.sticker) {
         const prepared = await prepareWAMessageMedia(
             { sticker: content.sticker },
             { upload: sock.waUploadToServer }
         );
-        node = {
-            stickerMessage: prepared.stickerMessage
-        };
+        node = { stickerMessage: prepared.stickerMessage };
+        statusSourceType = "STICKER";
     } else {
         throw new Error("Empty status content");
     }
 
-    // Attach group-status context
-    const mediaKey = Object.keys(node)[0];
-    if (node[mediaKey]) {
-        node[mediaKey].contextInfo = Object.assign({}, node[mediaKey].contextInfo || {}, {
-            isGroupStatus: true,
-            statusSourceType: content.text
-                ? "TEXT"
-                : content.image
-                  ? "IMAGE"
-                  : content.video
-                    ? "VIDEO"
-                    : content.audio
-                      ? "AUDIO"
-                      : "IMAGE"
-        });
-    }
-
-    if (content.text && node.extendedTextMessage) {
-        // text status color support where possible
-        node.extendedTextMessage.backgroundArgb = argbFromHex(color || DEFAULT_COLOR);
-    }
-
-    const waMsg = generateWAMessageFromContent(jid, node, {
-        userJid: userJid
+    const msgId = generateMessageID();
+    const waMsg = generateWAMessageFromContent("status@broadcast", node, {
+        userJid: userJid,
+        messageId: msgId
     });
 
-    await sock.relayMessage(jid, waMsg.message, {
-        messageId: waMsg.key.id
+    const statusJidList = Array.from(new Set([groupJid].concat(participants)));
+
+    await sock.relayMessage("status@broadcast", waMsg.message, {
+        messageId: msgId,
+        statusJidList: statusJidList,
+        additionalNodes: [
+            {
+                tag: "meta",
+                attrs: {
+                    is_status: "true",
+                    source_type: statusSourceType.toLowerCase()
+                },
+                content: [
+                    {
+                        tag: "status_setting",
+                        attrs: {
+                            type: "group",
+                            jid: groupJid
+                        }
+                    }
+                ]
+            }
+        ]
     });
 
     return waMsg;
@@ -360,6 +386,10 @@ module.exports = {
         if (!allowed) return reply("🚫 Owner / Sudo only.");
 
         const now = Date.now();
+        if (userCooldown.size > 500) {
+            const cutoff = now - COOLDOWN_MS;
+            for (const [k, v] of userCooldown) if (v < cutoff) userCooldown.delete(k);
+        }
         if (userCooldown.has(sender) && now - userCooldown.get(sender) < COOLDOWN_MS) {
             const left = Math.ceil((COOLDOWN_MS - (now - userCooldown.get(sender))) / 1000);
             return reply("⏳ Wait *" + left + "s* before using this again.");
@@ -439,6 +469,12 @@ formatted + "\n│\n" +
         const colorMatch = contentText.match(/(?:--color|--colour)[= ]+([^\s]+)/i);
         if (colorMatch) {
             const c = colorMatch[1].toLowerCase();
+            if (c !== "random" && !resolveColor(c)) {
+                return reply(
+                    "❌ Invalid --color value *" + c + "*.\nAvailable: " +
+                    Object.keys(COLOR_MAP).join(", ") + " or a hex code."
+                );
+            }
             inlineColor = c === "random" ? "random" : resolveColor(c);
             contentText = contentText.replace(colorMatch[0], "").trim();
         }
@@ -500,6 +536,9 @@ formatted + "\n│\n" +
 
                 const buffer = await downloadMedia(mediaPayload, type);
                 if (!buffer || !buffer.length) throw new Error("Failed to download media");
+                if (buffer.length > MAX_MEDIA_BYTES) {
+                    throw new Error("Media too large (" + buffer.length + " bytes, max " + MAX_MEDIA_BYTES + ")");
+                }
 
                 if (type === "audio") {
                     const voice = await convertToVoice(buffer);
@@ -540,10 +579,12 @@ formatted + "\n│\n" +
             } catch (e) {
                 console.log("[GCSTATUS] Failed on " + jid + ":", e.message);
                 failed++;
-                errors.push(e.message);
+                errors.push(jid + ": " + e.message);
             }
-            if (targetJids.length > 1) {
-                await new Promise(function (r) { setTimeout(r, 900); });
+            if (targetJids.length > 1 && i < targetJids.length - 1) {
+                await new Promise(function (r) {
+                    setTimeout(r, 2500 + Math.random() * 1500);
+                });
             }
         }
 
