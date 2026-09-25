@@ -1,7 +1,8 @@
 /**
- * VENOM X PLAY
- * Primary: @distube/ytdl-core (works better on servers)
- * Fallback: a few public APIs
+ * VENOM X PLAY (Render-safe)
+ * - Try YouTube (ytdl)
+ * - If 429/blocked → iTunes 30s preview (works on Render)
+ * - Always show song info + YT link
  */
 
 const axios = require("axios");
@@ -30,41 +31,49 @@ function formatDur(sec) {
 function streamToBuffer(stream) {
     return new Promise(function (resolve, reject) {
         const chunks = [];
-        stream.on("data", function (c) { chunks.push(c); });
+        let total = 0;
+        stream.on("data", function (c) {
+            chunks.push(c);
+            total += c.length;
+            // safety: stop insane sizes
+            if (total > 40 * 1024 * 1024) {
+                stream.destroy();
+                reject(new Error("Audio too large"));
+            }
+        });
         stream.on("end", function () {
             const buf = Buffer.concat(chunks);
-            if (!buf.length) return reject(new Error("Empty ytdl stream"));
+            if (buf.length < 1500) return reject(new Error("Empty audio"));
             resolve(buf);
         });
         stream.on("error", reject);
     });
 }
 
-async function itunesMeta(query) {
-    try {
-        const res = await axios.get("https://itunes.apple.com/search", {
-            params: { term: query, media: "music", entity: "song", limit: 1 },
-            timeout: 10000,
-            headers: { "User-Agent": UA }
-        });
-        const t = res.data && res.data.results && res.data.results[0];
-        if (!t) return null;
+async function itunesSearch(query) {
+    const res = await axios.get("https://itunes.apple.com/search", {
+        params: { term: query, media: "music", entity: "song", limit: 5 },
+        timeout: 12000,
+        headers: { "User-Agent": UA }
+    });
+    const list = (res.data && res.data.results) || [];
+    return list.map(function (t) {
         return {
-            title: t.trackName || null,
-            artist: t.artistName || null,
+            title: t.trackName || "Unknown",
+            artist: t.artistName || "Unknown",
+            album: t.collectionName || "",
             cover: String(t.artworkUrl100 || "").replace("100x100bb", "600x600bb"),
             duration: Math.floor((t.trackTimeMillis || 0) / 1000),
+            preview: t.previewUrl || null,
             query: (t.trackName || "") + " " + (t.artistName || "")
         };
-    } catch (e) {
-        return null;
-    }
+    });
 }
 
-async function findYoutube(query) {
+async function ytFind(query) {
     const r = await yts(query);
     const v = r.videos && r.videos[0];
-    if (!v || !v.videoId) throw new Error("No YouTube result");
+    if (!v || !v.videoId) return null;
     return {
         id: v.videoId,
         title: v.title,
@@ -74,9 +83,7 @@ async function findYoutube(query) {
     };
 }
 
-async function downloadWithYtdl(url) {
-    if (!ytdl.validateURL(url)) throw new Error("Invalid YouTube URL");
-
+async function ytdlFull(url) {
     const info = await ytdl.getInfo(url, {
         requestOptions: {
             headers: {
@@ -85,78 +92,32 @@ async function downloadWithYtdl(url) {
             }
         }
     });
-
     const format = ytdl.chooseFormat(info.formats, {
         quality: "highestaudio",
         filter: "audioonly"
     });
-
-    if (!format) throw new Error("No audio format from ytdl");
-
+    if (!format) throw new Error("No audio format");
     const stream = ytdl.downloadFromInfo(info, {
         format: format,
         highWaterMark: 1 << 25
     });
-
     const buffer = await streamToBuffer(stream);
-    if (buffer.length < 2000) throw new Error("ytdl audio too small");
-
     return {
         buffer: buffer,
         mime: format.mimeType || "audio/webm",
-        title: info.videoDetails && info.videoDetails.title,
-        source: "ytdl"
+        source: "youtube"
     };
 }
 
-function pickUrl(data) {
-    if (!data) return null;
-    if (typeof data === "string" && data.indexOf("http") === 0) return data;
-    return (
-        data.url ||
-        data.link ||
-        data.dl ||
-        data.download_url ||
-        (data.data && (data.data.url || data.data.link || data.data.dl)) ||
-        (data.result && (data.result.url || data.result.link || data.result.dl)) ||
-        null
-    );
-}
-
-async function downloadWithApis(youtubeUrl) {
-    const list = [
-        "https://api.agatz.xyz/api/ytmp3?url=" + encodeURIComponent(youtubeUrl),
-        "https://api.nyxs.pw/dl/yt?url=" + encodeURIComponent(youtubeUrl),
-        "https://nayan-video-downloader.vercel.app/ytmp3?url=" + encodeURIComponent(youtubeUrl)
-    ];
-
-    let last = null;
-    for (let i = 0; i < list.length; i++) {
-        try {
-            const { data } = await axios.get(list[i], {
-                timeout: 40000,
-                headers: { "User-Agent": UA }
-            });
-            const fileUrl = pickUrl(data);
-            if (!fileUrl) {
-                last = new Error("empty api result");
-                continue;
-            }
-
-            const bin = await axios.get(fileUrl, {
-                responseType: "arraybuffer",
-                timeout: 120000,
-                maxContentLength: 40 * 1024 * 1024,
-                headers: { "User-Agent": UA, Referer: "https://www.youtube.com/" }
-            });
-            const buffer = Buffer.from(bin.data);
-            if (buffer.length < 2000) throw new Error("small file");
-            return { buffer: buffer, mime: "audio/mpeg", source: "api" };
-        } catch (e) {
-            last = e;
-        }
-    }
-    throw last || new Error("API fallbacks failed");
+async function downloadUrl(url) {
+    const res = await axios.get(url, {
+        responseType: "arraybuffer",
+        timeout: 30000,
+        headers: { "User-Agent": UA }
+    });
+    const buffer = Buffer.from(res.data);
+    if (buffer.length < 1000) throw new Error("Preview too small");
+    return buffer;
 }
 
 module.exports = {
@@ -172,6 +133,8 @@ module.exports = {
 "╭━━〔 🎵 VENOM X PLAY 〕━━⬣\n\n" +
 "Usage:\n" +
 p + "play <song name>\n\n" +
+"On Render: full YT may be blocked (429).\n" +
+"Bot will send preview + link if needed.\n\n" +
 "╰━━━━━━━━━━━━━━━━⬣"
             );
         }
@@ -179,39 +142,66 @@ p + "play <song name>\n\n" +
         try {
             await reply("🔍 Searching: *" + text + "*");
 
-            const meta = await itunesMeta(text);
-            const yt = await findYoutube(meta ? meta.query : text);
-
-            let audio;
+            let tracks = [];
             try {
-                audio = await downloadWithYtdl(yt.url);
-            } catch (e1) {
-                console.log("YTDL failed:", e1.message);
-                try {
-                    audio = await downloadWithApis(yt.url);
-                } catch (e2) {
-                    throw new Error(
-                        "ytdl: " + (e1.message || e1) + " | apis: " + (e2.message || e2)
-                    );
-                }
-            }
+                tracks = await itunesSearch(text);
+            } catch (e) {}
 
-            const title = (meta && meta.title) || audio.title || yt.title || text;
+            const meta = tracks[0] || null;
+            const yt = await ytFind(meta ? meta.query : text);
+
+            const title = (meta && meta.title) || (yt && yt.title) || text;
             const artist = (meta && meta.artist) || "Unknown";
-            const cover = (meta && meta.cover) || yt.thumbnail;
+            const cover = (meta && meta.cover) || (yt && yt.thumbnail) || null;
             const dur =
                 meta && meta.duration
                     ? formatDur(meta.duration)
-                    : yt.seconds
+                    : yt && yt.seconds
                       ? formatDur(yt.seconds)
                       : "";
+
+            let audioBuffer = null;
+            let mime = "audio/mpeg";
+            let source = "";
+            let note = "";
+
+            // 1) Try full YouTube (often 429 on Render)
+            if (yt && yt.url) {
+                try {
+                    const full = await ytdlFull(yt.url);
+                    audioBuffer = full.buffer;
+                    mime = /mp4|m4a/i.test(full.mime)
+                        ? "audio/mp4"
+                        : /webm/i.test(full.mime)
+                          ? "audio/webm"
+                          : "audio/mpeg";
+                    source = "youtube";
+                } catch (e) {
+                    console.log("YT full failed:", e.message);
+                    note = "YouTube blocked on server (" + String(e.message).slice(0, 40) + ")";
+                }
+            }
+
+            // 2) iTunes preview fallback (works on Render)
+            if (!audioBuffer && meta && meta.preview) {
+                try {
+                    audioBuffer = await downloadUrl(meta.preview);
+                    mime = "audio/mpeg";
+                    source = "itunes-preview";
+                    note = "Full track blocked on Render. Sent 30s preview.";
+                } catch (e) {
+                    console.log("Preview failed:", e.message);
+                }
+            }
 
             const caption =
                 "╭━━〔 🎵 VENOM X PLAY 〕━━⬣\n" +
                 "┃ 🎧 " + title + "\n" +
                 "┃ 👤 " + artist + "\n" +
                 (dur ? "┃ ⏱️ " + dur + "\n" : "") +
-                "┃ 📡 " + (audio.source || "server") + "\n" +
+                (source ? "┃ 📡 " + source + "\n" : "") +
+                (yt && yt.url ? "┃ 🔗 " + yt.url + "\n" : "") +
+                (note ? "┃ ⚠️ " + note + "\n" : "") +
                 "╰━━━━━━━━━━━━━━━━⬣";
 
             if (cover) {
@@ -233,41 +223,39 @@ p + "play <song name>\n\n" +
                 await reply(caption);
             }
 
-            // normalize mime for WhatsApp
-            let mime = "audio/mpeg";
-            if (/mp4|m4a/i.test(String(audio.mime || ""))) mime = "audio/mp4";
-            else if (/webm/i.test(String(audio.mime || ""))) mime = "audio/webm";
-
-            try {
-                await sock.sendMessage(
-                    from,
-                    {
-                        audio: audio.buffer,
-                        mimetype: mime,
-                        fileName: String(title).slice(0, 40) + ".mp3",
-                        ptt: false
-                    },
-                    { quoted: message }
-                );
-            } catch (e) {
-                await sock.sendMessage(
-                    from,
-                    {
-                        document: audio.buffer,
-                        mimetype: "audio/mpeg",
-                        fileName: String(title).slice(0, 40) + ".mp3",
-                        caption: "🎵 " + title
-                    },
-                    { quoted: message }
+            if (audioBuffer) {
+                try {
+                    await sock.sendMessage(
+                        from,
+                        {
+                            audio: audioBuffer,
+                            mimetype: mime,
+                            fileName: String(title).slice(0, 40) + ".mp3",
+                            ptt: false
+                        },
+                        { quoted: message }
+                    );
+                } catch (e) {
+                    await sock.sendMessage(
+                        from,
+                        {
+                            document: audioBuffer,
+                            mimetype: "audio/mpeg",
+                            fileName: String(title).slice(0, 40) + ".mp3",
+                            caption: "🎵 " + title
+                        },
+                        { quoted: message }
+                    );
+                }
+            } else {
+                await reply(
+"❌ Could not fetch audio from this server.\n" +
+(yt && yt.url ? "Open: " + yt.url : "Try another song.")
                 );
             }
         } catch (err) {
             console.log("PLAY ERROR:", err.message || err);
-            return reply(
-"╭━━〔 ❌ PLAY FAILED 〕━━⬣\n\n" +
-String(err.message || err).slice(0, 400) +
-"\n\n╰━━━━━━━━━━━━━━━━⬣"
-            );
+            return reply("❌ Play failed:\n" + String(err.message || err).slice(0, 300));
         }
     }
 };
