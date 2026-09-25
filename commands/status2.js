@@ -262,9 +262,17 @@ async function postGroupStatus(sock, groupJid, content, color) {
     let participants = [];
     try {
         const meta = await sock.groupMetadata(groupJid);
+
+        // DEBUG: inspect what kind of participant IDs we get back
+        console.log("DEBUG participants sample:", JSON.stringify((meta.participants || []).slice(0, 3), null, 2));
+
         participants = (meta.participants || [])
-            .map(function (p) { return jidNormalizedUser(p.id); })
+            .map(function (p) {
+                const raw = p.phoneNumber || (String(p.id).includes("@lid") ? null : p.id);
+                return raw ? jidNormalizedUser(raw) : null;
+            })
             .filter(Boolean);
+        console.log("[GCSTATUS] " + groupJid + " -> " + participants.length + " participants");
     } catch (e) {
         throw new Error("groupMetadata failed: " + e.message);
     }
@@ -332,6 +340,14 @@ async function postGroupStatus(sock, groupJid, content, color) {
     });
 
     const statusJidList = Array.from(new Set([groupJid].concat(participants)));
+
+    // Establish device/session records before relaying, otherwise
+    // relayMessage throws "No sessions".
+    try {
+        await sock.getUSyncDevices(statusJidList, true, false);
+    } catch (e) {
+        console.log("[GCSTATUS] getUSyncDevices warn:", e.message);
+    }
 
     await sock.relayMessage("status@broadcast", waMsg.message, {
         messageId: msgId,
