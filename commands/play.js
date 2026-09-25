@@ -1,22 +1,10 @@
 /**
- * VENOM X PLAY - Render-friendly
- * Search: iTunes + yt-search
- * Audio: multi Piped instances + Cobalt fallback
+ * VENOM X PLAY - Render stable sources
  */
 
 const axios = require("axios");
 const yts = require("yt-search");
 const { getSettings } = require("../lib/settingsCache");
-
-const PIPED = [
-    "https://pipedapi.kavin.rocks",
-    "https://pipedapi.adminforge.de",
-    "https://pipedapi.nosea.serve.pieter.com",
-    "https://api.piped.private.coffee",
-    "https://pipedapi.leptons.xyz",
-    "https://piped-api.garudalinux.org",
-    "https://pipedapi.reallyaweso.me"
-];
 
 const UA =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
@@ -36,38 +24,16 @@ function formatDur(sec) {
     return m + ":" + String(s).padStart(2, "0");
 }
 
-async function pipedGet(pathname) {
-    let last = null;
-    for (let i = 0; i < PIPED.length; i++) {
-        try {
-            const res = await axios.get(PIPED[i] + pathname, {
-                timeout: 20000,
-                headers: {
-                    "User-Agent": UA,
-                    Accept: "application/json"
-                }
-            });
-            if (res.data) return res.data;
-        } catch (e) {
-            last = e;
-        }
-    }
-    throw last || new Error("All Piped instances failed");
-}
-
 async function itunesSearch(query) {
-    const res = await axios.get("https://itunes.apple.com/search", {
-        params: {
-            term: query,
-            media: "music",
-            entity: "song",
-            limit: 5
-        },
-        timeout: 12000,
-        headers: { "User-Agent": UA }
-    });
-    const results = (res.data && res.data.results) || [];
-    return results.map(function (t) {
+    try {
+        const res = await axios.get("https://itunes.apple.com/search", {
+            params: { term: query, media: "music", entity: "song", limit: 3 },
+            timeout: 12000,
+            headers: { "User-Agent": UA }
+        });
+        const results = (res.data && res.data.results) || [];
+        if (!results.length) return null;
+        const t = results[0];
         return {
             title: t.trackName || "Unknown",
             artist: t.artistName || "Unknown",
@@ -75,120 +41,163 @@ async function itunesSearch(query) {
             duration: Math.floor((t.trackTimeMillis || 0) / 1000),
             query: (t.trackName || "") + " " + (t.artistName || "")
         };
-    });
-}
-
-async function ytFindId(query) {
-    // 1) yt-search package (usually works on Render)
-    try {
-        const r = await yts(query + " audio");
-        const v =
-            (r.videos && r.videos[0]) ||
-            (r.all && r.all.find(function (x) { return x.type === "video"; }));
-        if (v && v.videoId) {
-            return {
-                id: v.videoId,
-                title: v.title,
-                url: v.url,
-                seconds: v.seconds || 0,
-                thumbnail: v.thumbnail
-            };
-        }
-    } catch (e) {}
-
-    // 2) Piped search fallback
-    const data = await pipedGet(
-        "/search?q=" + encodeURIComponent(query) + "&filter=videos"
-    );
-    const items = data.items || data || [];
-    const list = Array.isArray(items) ? items : [];
-    const v = list.find(function (x) {
-        return x && (x.url || x.id);
-    });
-    if (!v) throw new Error("No YouTube result found");
-
-    let id = v.id;
-    if (!id && v.url) {
-        const m = String(v.url).match(/([a-zA-Z0-9_-]{11})/);
-        id = m ? m[1] : null;
+    } catch (e) {
+        return null;
     }
-    if (!id) throw new Error("No video id");
+}
 
+async function ytFind(query) {
+    const r = await yts(query);
+    const v =
+        (r.videos && r.videos[0]) ||
+        (r.all && r.all.find(function (x) { return x && x.type === "video"; }));
+    if (!v || !v.videoId) throw new Error("No YouTube result found");
     return {
-        id: id,
-        title: v.title || query,
-        url: "https://youtu.be/" + id,
-        seconds: v.duration || 0,
-        thumbnail: v.thumbnail || null
+        id: v.videoId,
+        title: v.title,
+        url: "https://youtu.be/" + v.videoId,
+        seconds: v.seconds || 0,
+        thumbnail: v.thumbnail
     };
 }
 
-async function getAudioFromPiped(videoId) {
-    const data = await pipedGet("/streams/" + encodeURIComponent(videoId));
-    const streams = data.audioStreams || [];
-    if (!streams.length) throw new Error("No audio streams");
+function pickUrl(obj) {
+    if (!obj) return null;
+    if (typeof obj === "string" && obj.indexOf("http") === 0) return obj;
 
-    streams.sort(function (a, b) {
-        return (Number(b.bitrate) || 0) - (Number(a.bitrate) || 0);
-    });
-
-    const best =
-        streams.find(function (s) {
-            return /m4a|mp4|audio\/mp4/i.test(String(s.mimeType || s.format || ""));
-        }) || streams[0];
-
-    if (!best || !best.url) throw new Error("No audio URL from Piped");
-
-    return {
-        url: best.url,
-        mime: best.mimeType || "audio/mp4",
-        title: data.title || "audio"
-    };
+    return (
+        obj.url ||
+        obj.link ||
+        obj.download_url ||
+        obj.dl_url ||
+        obj.audio ||
+        obj.result ||
+        (obj.data && (obj.data.url || obj.data.link || obj.data.dl || obj.data.download_url)) ||
+        (obj.result && (obj.result.url || obj.result.link || obj.result.dl)) ||
+        null
+    );
 }
 
-async function getAudioFromCobalt(youtubeUrl) {
-    // Public Cobalt-style fallback (may change; best-effort)
-    const endpoints = [
-        "https://api.cobalt.tools/api/json",
-        "https://cobalt-api.kwiatekmiki.com"
+async function extractAudio(youtubeUrl, videoId) {
+    const errors = [];
+
+    // --- Source pack (public APIs used by many WA bots) ---
+    const tries = [
+        // 1
+        async function () {
+            const { data } = await axios.get(
+                "https://apis.davidcyriltech.my.id/download/ytmp3?url=" +
+                    encodeURIComponent(youtubeUrl),
+                { timeout: 45000, headers: { "User-Agent": UA } }
+            );
+            const url = pickUrl(data);
+            if (!url) throw new Error("davidcyril empty");
+            return { url: url, mime: "audio/mpeg", name: "davidcyril" };
+        },
+        // 2
+        async function () {
+            const { data } = await axios.get(
+                "https://api.siputzx.my.id/api/d/ytmp3?url=" +
+                    encodeURIComponent(youtubeUrl),
+                { timeout: 45000, headers: { "User-Agent": UA } }
+            );
+            const url = pickUrl(data);
+            if (!url) throw new Error("siputzx empty");
+            return { url: url, mime: "audio/mpeg", name: "siputzx" };
+        },
+        // 3
+        async function () {
+            const { data } = await axios.get(
+                "https://v2.api-m.com/api/ytmp3?url=" +
+                    encodeURIComponent(youtubeUrl),
+                { timeout: 45000, headers: { "User-Agent": UA } }
+            );
+            const url = pickUrl(data);
+            if (!url) throw new Error("api-m empty");
+            return { url: url, mime: "audio/mpeg", name: "api-m" };
+        },
+        // 4 Invidious-like / latest_version style mirrors
+        async function () {
+            const hosts = [
+                "https://invidious.nerdvpn.de",
+                "https://yewtu.be",
+                "https://inv.nadeko.net"
+            ];
+            let last = null;
+            for (let i = 0; i < hosts.length; i++) {
+                try {
+                    const { data } = await axios.get(
+                        hosts[i] +
+                            "/latest_version?id=" +
+                            encodeURIComponent(videoId) +
+                            "&itag=140",
+                        {
+                            timeout: 20000,
+                            maxRedirects: 0,
+                            validateStatus: function (s) {
+                                return s >= 200 && s < 400 || s === 302 || s === 303;
+                            },
+                            headers: { "User-Agent": UA }
+                        }
+                    );
+                    // some return redirect
+                } catch (e) {
+                    const loc =
+                        e.response &&
+                        e.response.headers &&
+                        e.response.headers.location;
+                    if (loc && String(loc).indexOf("http") === 0) {
+                        return { url: loc, mime: "audio/mp4", name: "invidious" };
+                    }
+                    last = e;
+                }
+            }
+            throw last || new Error("invidious failed");
+        },
+        // 5 Piped last resort
+        async function () {
+            const bases = [
+                "https://pipedapi.adminforge.de",
+                "https://pipedapi.reallyaweso.me",
+                "https://pipedapi.leptons.xyz"
+            ];
+            let last = null;
+            for (let i = 0; i < bases.length; i++) {
+                try {
+                    const { data } = await axios.get(
+                        bases[i] + "/streams/" + encodeURIComponent(videoId),
+                        { timeout: 20000, headers: { "User-Agent": UA } }
+                    );
+                    const streams = data.audioStreams || [];
+                    if (!streams.length) throw new Error("no streams");
+                    streams.sort(function (a, b) {
+                        return (Number(b.bitrate) || 0) - (Number(a.bitrate) || 0);
+                    });
+                    const best = streams[0];
+                    if (!best || !best.url) throw new Error("no url");
+                    return {
+                        url: best.url,
+                        mime: best.mimeType || "audio/mp4",
+                        name: "piped"
+                    };
+                } catch (e) {
+                    last = e;
+                }
+            }
+            throw last || new Error("piped failed");
+        }
     ];
 
-    let last = null;
-    for (let i = 0; i < endpoints.length; i++) {
+    for (let i = 0; i < tries.length; i++) {
         try {
-            const res = await axios.post(
-                endpoints[i],
-                {
-                    url: youtubeUrl,
-                    isAudioOnly: true,
-                    aFormat: "mp3",
-                    filenamePattern: "basic"
-                },
-                {
-                    timeout: 30000,
-                    headers: {
-                        Accept: "application/json",
-                        "Content-Type": "application/json",
-                        "User-Agent": UA
-                    }
-                }
-            );
-
-            const d = res.data || {};
-            const url = d.url || d.link || (d.tunnel && d.tunnel) || null;
-            if (url) {
-                return {
-                    url: url,
-                    mime: "audio/mpeg",
-                    title: d.filename || "audio"
-                };
-            }
-            last = new Error(d.text || d.error || "Cobalt empty");
+            const out = await tries[i]();
+            if (out && out.url) return out;
         } catch (e) {
-            last = e;
+            errors.push(String(e.message || e));
         }
     }
-    throw last || new Error("Cobalt failed");
+
+    throw new Error("All extractors failed: " + errors.slice(0, 4).join(" | "));
 }
 
 async function downloadBuffer(url) {
@@ -200,7 +209,6 @@ async function downloadBuffer(url) {
         headers: {
             "User-Agent": UA,
             Accept: "*/*",
-            "Accept-Language": "en-US,en;q=0.9",
             Referer: "https://www.youtube.com/"
         },
         validateStatus: function (s) {
@@ -208,7 +216,7 @@ async function downloadBuffer(url) {
         }
     });
     const buf = Buffer.from(res.data);
-    if (!buf || buf.length < 2000) throw new Error("Downloaded audio too small");
+    if (!buf || buf.length < 2000) throw new Error("Audio file too small");
     return buf;
 }
 
@@ -224,8 +232,7 @@ module.exports = {
             return reply(
 "╭━━〔 🎵 VENOM X PLAY 〕━━⬣\n\n" +
 "Usage:\n" +
-p + "play <song name>\n" +
-p + "play Alone\n\n" +
+p + "play <song name>\n\n" +
 "╰━━━━━━━━━━━━━━━━⬣"
             );
         }
@@ -233,40 +240,13 @@ p + "play Alone\n\n" +
         try {
             await reply("🔍 Searching: *" + text + "*");
 
-            let meta = null;
-            try {
-                const tracks = await itunesSearch(text);
-                if (tracks.length) meta = tracks[0];
-            } catch (e) {}
+            const meta = await itunesSearch(text);
+            const yt = await ytFind(meta ? meta.query : text);
+            const audio = await extractAudio(yt.url, yt.id);
 
-            const searchQ = meta ? meta.query : text;
-            const yt = await ytFindId(searchQ);
-
-            let audio = null;
-            let source = "";
-
-            // 1) Piped
-            try {
-                audio = await getAudioFromPiped(yt.id);
-                source = "piped";
-            } catch (e1) {
-                // 2) Cobalt fallback
-                try {
-                    audio = await getAudioFromCobalt(yt.url || ("https://youtu.be/" + yt.id));
-                    source = "cobalt";
-                } catch (e2) {
-                    throw new Error(
-                        "Audio extract failed on server. Piped: " +
-                            (e1.message || e1) +
-                            " | Cobalt: " +
-                            (e2.message || e2)
-                    );
-                }
-            }
-
-            const title = (meta && meta.title) || yt.title || audio.title || text;
+            const title = (meta && meta.title) || yt.title || text;
             const artist = (meta && meta.artist) || "Unknown";
-            const cover = (meta && meta.cover) || yt.thumbnail || null;
+            const cover = (meta && meta.cover) || yt.thumbnail;
             const dur =
                 meta && meta.duration
                     ? formatDur(meta.duration)
@@ -279,15 +259,15 @@ p + "play Alone\n\n" +
                 "┃ 🎧 " + title + "\n" +
                 "┃ 👤 " + artist + "\n" +
                 (dur ? "┃ ⏱️ " + dur + "\n" : "") +
-                "┃ 📡 " + source + "\n" +
-                "┃ ⬇️ Sending audio...\n" +
+                "┃ 📡 " + audio.name + "\n" +
+                "┃ ⬇️ Sending...\n" +
                 "╰━━━━━━━━━━━━━━━━⬣";
 
             if (cover) {
                 try {
                     const img = await axios.get(cover, {
                         responseType: "arraybuffer",
-                        timeout: 15000,
+                        timeout: 12000,
                         headers: { "User-Agent": UA }
                     });
                     await sock.sendMessage(
@@ -304,7 +284,6 @@ p + "play Alone\n\n" +
 
             const buffer = await downloadBuffer(audio.url);
 
-            // Prefer audio message; if WA rejects, send as document
             try {
                 await sock.sendMessage(
                     from,
@@ -333,10 +312,9 @@ p + "play Alone\n\n" +
         } catch (err) {
             console.log("PLAY ERROR:", err.message || err);
             return reply(
-"╭━━〔 ❌ VENOM X PLAY 〕━━⬣\n\n" +
-"Failed: " +
-String(err.message || err).slice(0, 280) +
-"\n\nTip: try a clearer song name.\n\n" +
+"╭━━〔 ❌ PLAY FAILED 〕━━⬣\n\n" +
+String(err.message || err).slice(0, 350) +
+"\n\nTry another song name.\n\n" +
 "╰━━━━━━━━━━━━━━━━⬣"
             );
         }
