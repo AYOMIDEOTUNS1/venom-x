@@ -1,12 +1,25 @@
+/**
+ * VENOM X PLAY - Render-friendly
+ * Search: iTunes + yt-search
+ * Audio: multi Piped instances + Cobalt fallback
+ */
+
 const axios = require("axios");
+const yts = require("yt-search");
 const { getSettings } = require("../lib/settingsCache");
 
 const PIPED = [
     "https://pipedapi.kavin.rocks",
-    "https://pipedapi.in.projectsegfau.lt",
+    "https://pipedapi.adminforge.de",
+    "https://pipedapi.nosea.serve.pieter.com",
     "https://api.piped.private.coffee",
-    "https://pipedapi.adminforge.de"
+    "https://pipedapi.leptons.xyz",
+    "https://piped-api.garudalinux.org",
+    "https://pipedapi.reallyaweso.me"
 ];
+
+const UA =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 function px() {
     try {
@@ -28,36 +41,62 @@ async function pipedGet(pathname) {
     for (let i = 0; i < PIPED.length; i++) {
         try {
             const res = await axios.get(PIPED[i] + pathname, {
-                timeout: 25000,
-                headers: { "User-Agent": "VENOM-X" }
+                timeout: 20000,
+                headers: {
+                    "User-Agent": UA,
+                    Accept: "application/json"
+                }
             });
             if (res.data) return res.data;
         } catch (e) {
             last = e;
         }
     }
-    throw last || new Error("Piped APIs failed");
+    throw last || new Error("All Piped instances failed");
 }
 
 async function itunesSearch(query) {
     const res = await axios.get("https://itunes.apple.com/search", {
-        params: { term: query, media: "music", entity: "song", limit: 5 },
-        timeout: 15000
+        params: {
+            term: query,
+            media: "music",
+            entity: "song",
+            limit: 5
+        },
+        timeout: 12000,
+        headers: { "User-Agent": UA }
     });
     const results = (res.data && res.data.results) || [];
     return results.map(function (t) {
         return {
             title: t.trackName || "Unknown",
             artist: t.artistName || "Unknown",
-            album: t.collectionName || "",
-            cover: (t.artworkUrl100 || "").replace("100x100", "600x600"),
+            cover: String(t.artworkUrl100 || "").replace("100x100bb", "600x600bb"),
             duration: Math.floor((t.trackTimeMillis || 0) / 1000),
             query: (t.trackName || "") + " " + (t.artistName || "")
         };
     });
 }
 
-async function pipedSearch(query) {
+async function ytFindId(query) {
+    // 1) yt-search package (usually works on Render)
+    try {
+        const r = await yts(query + " audio");
+        const v =
+            (r.videos && r.videos[0]) ||
+            (r.all && r.all.find(function (x) { return x.type === "video"; }));
+        if (v && v.videoId) {
+            return {
+                id: v.videoId,
+                title: v.title,
+                url: v.url,
+                seconds: v.seconds || 0,
+                thumbnail: v.thumbnail
+            };
+        }
+    } catch (e) {}
+
+    // 2) Piped search fallback
     const data = await pipedGet(
         "/search?q=" + encodeURIComponent(query) + "&filter=videos"
     );
@@ -66,27 +105,40 @@ async function pipedSearch(query) {
     const v = list.find(function (x) {
         return x && (x.url || x.id);
     });
-    if (!v) throw new Error("No playable result found.");
+    if (!v) throw new Error("No YouTube result found");
+
     let id = v.id;
     if (!id && v.url) {
         const m = String(v.url).match(/([a-zA-Z0-9_-]{11})/);
-        id = m ? m[1] : String(v.url).replace("/watch?v=", "");
+        id = m ? m[1] : null;
     }
-    return id;
+    if (!id) throw new Error("No video id");
+
+    return {
+        id: id,
+        title: v.title || query,
+        url: "https://youtu.be/" + id,
+        seconds: v.duration || 0,
+        thumbnail: v.thumbnail || null
+    };
 }
 
-async function getAudio(videoId) {
+async function getAudioFromPiped(videoId) {
     const data = await pipedGet("/streams/" + encodeURIComponent(videoId));
     const streams = data.audioStreams || [];
-    if (!streams.length) throw new Error("No audio stream.");
+    if (!streams.length) throw new Error("No audio streams");
+
     streams.sort(function (a, b) {
-        return (b.bitrate || 0) - (a.bitrate || 0);
+        return (Number(b.bitrate) || 0) - (Number(a.bitrate) || 0);
     });
+
     const best =
         streams.find(function (s) {
-            return /m4a|mp4/i.test(String(s.mimeType || ""));
+            return /m4a|mp4|audio\/mp4/i.test(String(s.mimeType || s.format || ""));
         }) || streams[0];
-    if (!best || !best.url) throw new Error("No audio URL.");
+
+    if (!best || !best.url) throw new Error("No audio URL from Piped");
+
     return {
         url: best.url,
         mime: best.mimeType || "audio/mp4",
@@ -94,9 +146,75 @@ async function getAudio(videoId) {
     };
 }
 
+async function getAudioFromCobalt(youtubeUrl) {
+    // Public Cobalt-style fallback (may change; best-effort)
+    const endpoints = [
+        "https://api.cobalt.tools/api/json",
+        "https://cobalt-api.kwiatekmiki.com"
+    ];
+
+    let last = null;
+    for (let i = 0; i < endpoints.length; i++) {
+        try {
+            const res = await axios.post(
+                endpoints[i],
+                {
+                    url: youtubeUrl,
+                    isAudioOnly: true,
+                    aFormat: "mp3",
+                    filenamePattern: "basic"
+                },
+                {
+                    timeout: 30000,
+                    headers: {
+                        Accept: "application/json",
+                        "Content-Type": "application/json",
+                        "User-Agent": UA
+                    }
+                }
+            );
+
+            const d = res.data || {};
+            const url = d.url || d.link || (d.tunnel && d.tunnel) || null;
+            if (url) {
+                return {
+                    url: url,
+                    mime: "audio/mpeg",
+                    title: d.filename || "audio"
+                };
+            }
+            last = new Error(d.text || d.error || "Cobalt empty");
+        } catch (e) {
+            last = e;
+        }
+    }
+    throw last || new Error("Cobalt failed");
+}
+
+async function downloadBuffer(url) {
+    const res = await axios.get(url, {
+        responseType: "arraybuffer",
+        timeout: 120000,
+        maxContentLength: 40 * 1024 * 1024,
+        maxBodyLength: 40 * 1024 * 1024,
+        headers: {
+            "User-Agent": UA,
+            Accept: "*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+            Referer: "https://www.youtube.com/"
+        },
+        validateStatus: function (s) {
+            return s >= 200 && s < 400;
+        }
+    });
+    const buf = Buffer.from(res.data);
+    if (!buf || buf.length < 2000) throw new Error("Downloaded audio too small");
+    return buf;
+}
+
 module.exports = {
     name: "play",
-    aliases: ["song", "music", "apple", "applemusic"],
+    aliases: ["song", "music", "ytplay"],
 
     run: async function ({ sock, from, args, reply, message }) {
         const p = px();
@@ -104,52 +222,64 @@ module.exports = {
 
         if (!text) {
             return reply(
-`╭━━〔 🎵 VENOM X PLAY 〕━━⬣
-
-Usage:
-${p}play <song name>
-${p}play Alone 2
-
-Uses music search + high-quality audio.
-
-╰━━━━━━━━━━━━━━━━⬣`
+"╭━━〔 🎵 VENOM X PLAY 〕━━⬣\n\n" +
+"Usage:\n" +
+p + "play <song name>\n" +
+p + "play Alone\n\n" +
+"╰━━━━━━━━━━━━━━━━⬣"
             );
         }
 
-        const parts = text.split(/\s+/);
-        const last = parts[parts.length - 1];
-        const pick = /^\d+$/.test(last) ? parseInt(last, 10) : 1;
-        const query = /^\d+$/.test(last) ? parts.slice(0, -1).join(" ") : text;
-
-        if (!query) {
-            return reply("❌ Song name required.");
-        }
-
         try {
-            await reply("🔍 Searching: *" + query + "*");
+            await reply("🔍 Searching: *" + text + "*");
 
             let meta = null;
             try {
-                const tracks = await itunesSearch(query);
-                if (tracks.length) {
-                    meta = tracks[Math.min(Math.max(pick, 1), tracks.length) - 1];
-                }
+                const tracks = await itunesSearch(text);
+                if (tracks.length) meta = tracks[0];
             } catch (e) {}
 
-            const searchQ = meta ? meta.query : query;
-            const videoId = await pipedSearch(searchQ);
-            const audio = await getAudio(videoId);
+            const searchQ = meta ? meta.query : text;
+            const yt = await ytFindId(searchQ);
 
-            const title = (meta && meta.title) || audio.title || query;
+            let audio = null;
+            let source = "";
+
+            // 1) Piped
+            try {
+                audio = await getAudioFromPiped(yt.id);
+                source = "piped";
+            } catch (e1) {
+                // 2) Cobalt fallback
+                try {
+                    audio = await getAudioFromCobalt(yt.url || ("https://youtu.be/" + yt.id));
+                    source = "cobalt";
+                } catch (e2) {
+                    throw new Error(
+                        "Audio extract failed on server. Piped: " +
+                            (e1.message || e1) +
+                            " | Cobalt: " +
+                            (e2.message || e2)
+                    );
+                }
+            }
+
+            const title = (meta && meta.title) || yt.title || audio.title || text;
             const artist = (meta && meta.artist) || "Unknown";
-            const cover = meta && meta.cover;
-            const dur = meta ? formatDur(meta.duration) : "";
+            const cover = (meta && meta.cover) || yt.thumbnail || null;
+            const dur =
+                meta && meta.duration
+                    ? formatDur(meta.duration)
+                    : yt.seconds
+                      ? formatDur(yt.seconds)
+                      : "";
 
             const caption =
                 "╭━━〔 🎵 VENOM X PLAY 〕━━⬣\n" +
                 "┃ 🎧 " + title + "\n" +
                 "┃ 👤 " + artist + "\n" +
                 (dur ? "┃ ⏱️ " + dur + "\n" : "") +
+                "┃ 📡 " + source + "\n" +
                 "┃ ⬇️ Sending audio...\n" +
                 "╰━━━━━━━━━━━━━━━━⬣";
 
@@ -157,7 +287,8 @@ Uses music search + high-quality audio.
                 try {
                     const img = await axios.get(cover, {
                         responseType: "arraybuffer",
-                        timeout: 15000
+                        timeout: 15000,
+                        headers: { "User-Agent": UA }
                     });
                     await sock.sendMessage(
                         from,
@@ -171,37 +302,42 @@ Uses music search + high-quality audio.
                 await reply(caption);
             }
 
-            const bin = await axios.get(audio.url, {
-                responseType: "arraybuffer",
-                timeout: 120000,
-                maxContentLength: 50 * 1024 * 1024,
-                headers: { "User-Agent": "VENOM-X" }
-            });
-            const buffer = Buffer.from(bin.data);
-            if (buffer.length < 1000) throw new Error("Empty audio.");
+            const buffer = await downloadBuffer(audio.url);
 
-            await sock.sendMessage(
-                from,
-                {
-                    audio: buffer,
-                    mimetype: /mp4|m4a/i.test(audio.mime)
-                        ? "audio/mp4"
-                        : "audio/mpeg",
-                    fileName: String(title).slice(0, 50) + ".m4a",
-                    ptt: false
-                },
-                { quoted: message }
-            );
+            // Prefer audio message; if WA rejects, send as document
+            try {
+                await sock.sendMessage(
+                    from,
+                    {
+                        audio: buffer,
+                        mimetype: /mp4|m4a/i.test(String(audio.mime || ""))
+                            ? "audio/mp4"
+                            : "audio/mpeg",
+                        fileName: String(title).slice(0, 40) + ".mp3",
+                        ptt: false
+                    },
+                    { quoted: message }
+                );
+            } catch (e) {
+                await sock.sendMessage(
+                    from,
+                    {
+                        document: buffer,
+                        mimetype: "audio/mpeg",
+                        fileName: String(title).slice(0, 40) + ".mp3",
+                        caption: "🎵 " + title
+                    },
+                    { quoted: message }
+                );
+            }
         } catch (err) {
-            console.log("PLAY ERROR:", err.message);
+            console.log("PLAY ERROR:", err.message || err);
             return reply(
-`╭━━〔 ❌ VENOM X PLAY 〕━━⬣
-
-Failed: ${String(err.message || "").slice(0, 300)}
-
-Try another song name.
-
-╰━━━━━━━━━━━━━━━━⬣`
+"╭━━〔 ❌ VENOM X PLAY 〕━━⬣\n\n" +
+"Failed: " +
+String(err.message || err).slice(0, 280) +
+"\n\nTip: try a clearer song name.\n\n" +
+"╰━━━━━━━━━━━━━━━━⬣"
             );
         }
     }
