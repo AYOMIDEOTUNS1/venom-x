@@ -89,6 +89,17 @@ module.exports = function (sock) {
         flap: "🐤",
         snake: "🐍",
         ttt: "🎮",
+        ban: "🚫",
+        unban: "✅",
+        invite: "🔗",
+        grouplink: "🔗",
+        blur: "🌫️",
+        github: "🐙",
+        grouppfp: "🖼️",
+        tomp3: "🎧",
+        setfullpfp: "🖼️",
+        url: "🔗",
+        tovid: "🎬",
         default: "⚙️"
     };
 
@@ -268,6 +279,13 @@ module.exports = function (sock) {
             const allowSelf = settings.allowSelf !== false;
             if (msg.key.fromMe && !allowSelf && !isOwner) return;
 
+            // Global ban check
+            try {
+                const banlist = require("../lib/banlist");
+                if (!isPrivileged && banlist.isBanned(sender)) return;
+            } catch (e) {}
+
+            // Autoreact (non-blocking)
             setImmediate(function () {
                 try {
                     const ar = require("../commands/autoreact");
@@ -277,6 +295,7 @@ module.exports = function (sock) {
                 } catch (e) {}
             });
 
+            // Group protections (non-blocking)
             if (isGroup) {
                 setImmediate(function () {
                     try {
@@ -296,6 +315,7 @@ module.exports = function (sock) {
                 });
             }
 
+            // Sticker collector (non-blocking)
             if (!msg.key.fromMe) {
                 setImmediate(function () {
                     (async function () {
@@ -413,6 +433,7 @@ module.exports = function (sock) {
                 return;
             }
 
+            // Private mode: owner OR sudo
             if (
                 String(settings.mode || "").toLowerCase() === "private" &&
                 !isPrivileged
