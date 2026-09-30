@@ -1,6 +1,7 @@
 /**
- * VENOM X - #tovid (fixed sticker support)
- * Reply sticker / image / gif → mp4
+ * VENOM X - #tovid (animated sticker fix)
+ * Static sticker/image → short video
+ * Animated sticker → real moving video
  */
 
 const fs = require("fs");
@@ -27,9 +28,11 @@ function unwrap(msg) {
         const wrap =
             (cur && cur.viewOnceMessageV2 && cur.viewOnceMessageV2.message) ||
             (cur && cur.viewOnceMessage && cur.viewOnceMessage.message) ||
-            (cur && cur.viewOnceMessageV2Extension && cur.viewOnceMessageV2Extension.message) ||
+            (cur && cur.viewOnceMessageV2Extension &&
+                cur.viewOnceMessageV2Extension.message) ||
             (cur && cur.ephemeralMessage && cur.ephemeralMessage.message) ||
-            (cur && cur.documentWithCaptionMessage && cur.documentWithCaptionMessage.message) ||
+            (cur && cur.documentWithCaptionMessage &&
+                cur.documentWithCaptionMessage.message) ||
             null;
         if (!wrap) break;
         cur = wrap;
@@ -61,37 +64,64 @@ async function download(msg, type) {
     return buf;
 }
 
-async function imageToVideo(inputPath, outputPath) {
+async function staticToVideo(pngPath, outputPath) {
     await execAsync(
         'ffmpeg -hide_banner -loglevel error -y -loop 1 -i "' +
-            inputPath +
-            '" -t 3 -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" -c:v libx264 -pix_fmt yuv420p -movflags +faststart "' +
+            pngPath +
+            '" -t 3 -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" ' +
+            '-c:v libx264 -pix_fmt yuv420p -movflags +faststart "' +
             outputPath +
             '"'
     );
 }
 
-async function mediaToVideo(inputPath, outputPath) {
-    // try normal decode
+async function animatedWebpToVideo(webpPath, outputPath) {
+    const gifPath = tmp("gif");
+
+    // 1) best: ffmpeg reads animated webp directly
     try {
         await execAsync(
             'ffmpeg -hide_banner -loglevel error -y -i "' +
-                inputPath +
-                '" -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" -c:v libx264 -pix_fmt yuv420p -movflags +faststart -an "' +
+                webpPath +
+                '" -vf "fps=20,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" ' +
+                '-c:v libx264 -pix_fmt yuv420p -movflags +faststart -an "' +
                 outputPath +
                 '"'
         );
-        return;
+        // if file is tiny, treat as fail
+        const st = fs.statSync(outputPath);
+        if (st.size > 5000) return;
+        throw new Error("output too small");
     } catch (e1) {
-        // animated webp sometimes needs this
-        await execAsync(
-            'ffmpeg -hide_banner -loglevel error -y -c:v libwebp -i "' +
-                inputPath +
-                '" -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" -c:v libx264 -pix_fmt yuv420p -movflags +faststart -an "' +
-                outputPath +
-                '"'
-        );
+        // 2) sharp animated → gif → mp4
+        try {
+            await sharp(webpPath, { animated: true })
+                .gif()
+                .toFile(gifPath);
+
+            await execAsync(
+                'ffmpeg -hide_banner -loglevel error -y -i "' +
+                    gifPath +
+                    '" -vf "fps=20,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" ' +
+                    '-c:v libx264 -pix_fmt yuv420p -movflags +faststart -an "' +
+                    outputPath +
+                    '"'
+            );
+        } finally {
+            try { fs.unlinkSync(gifPath); } catch (e) {}
+        }
     }
+}
+
+async function videoPassthrough(inputPath, outputPath) {
+    await execAsync(
+        'ffmpeg -hide_banner -loglevel error -y -i "' +
+            inputPath +
+            '" -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" ' +
+            '-c:v libx264 -pix_fmt yuv420p -movflags +faststart -an "' +
+            outputPath +
+            '"'
+    );
 }
 
 module.exports = {
@@ -105,71 +135,64 @@ module.exports = {
             return reply(
 "╭━━〔 🎬 VENOM TOVID 〕━━⬣\n" +
 "┃ Reply to:\n" +
-"┃ • sticker (static/animated)\n" +
-"┃ • image\n" +
-"┃ • gif / short video\n" +
+"┃ • animated sticker\n" +
+"┃ • static sticker / image\n" +
+"┃ • gif / video\n" +
 "┃\n" +
 "┃ Then: #tovid\n" +
 "╰━━━━━━━━━━━━━━━━⬣"
             );
         }
 
-        // Lottie stickers can't be converted easily
         if (
             quoted.stickerMessage &&
             (quoted.stickerMessage.isLottie || quoted.stickerMessage.lottie)
         ) {
-            return reply("❌ Lottie stickers can't be converted to video.");
+            return reply("❌ Lottie stickers can't be converted.");
         }
 
         let type = null;
-        let mode = "media"; // media | image
+        let animated = false;
 
         if (quoted.stickerMessage) {
             type = "sticker";
-            // static sticker → treat as image via sharp (most reliable)
-            if (!quoted.stickerMessage.isAnimated) {
-                mode = "image";
-            }
+            animated = !!(
+                quoted.stickerMessage.isAnimated ||
+                quoted.stickerMessage.isAvatar
+            );
         } else if (quoted.imageMessage) {
             type = "image";
-            mode = "image";
         } else if (quoted.videoMessage) {
             type = "video";
-            mode = "media";
+            animated = true;
         } else {
-            return reply("❌ Reply to a sticker, image, or gif/video.");
+            return reply("❌ Reply to a sticker, image, or video.");
         }
 
-        const input = tmp(type === "sticker" ? "webp" : type === "image" ? "jpg" : "mp4");
+        const input = tmp(
+            type === "sticker" ? "webp" : type === "image" ? "jpg" : "mp4"
+        );
         const mid = tmp("png");
         const output = tmp("mp4");
 
         try {
-            await reply("🎬 Converting to video...");
+            await reply(
+                animated
+                    ? "🎬 Converting animated sticker/video..."
+                    : "🎬 Converting to video..."
+            );
 
             const buffer = await download(quoted, type);
             fs.writeFileSync(input, buffer);
 
-            if (mode === "image") {
-                // webp/jpg → png with sharp, then 3s video
-                await sharp(buffer)
-                    .rotate()
-                    .png()
-                    .toFile(mid);
-
-                await imageToVideo(mid, output);
+            if (type === "video") {
+                await videoPassthrough(input, output);
+            } else if (type === "sticker" && animated) {
+                await animatedWebpToVideo(input, output);
             } else {
-                // animated sticker / video
-                try {
-                    await mediaToVideo(input, output);
-                } catch (e) {
-                    // last fallback: first frame via sharp → short video
-                    await sharp(buffer, { animated: false, pages: 1 })
-                        .png()
-                        .toFile(mid);
-                    await imageToVideo(mid, output);
-                }
+                // static sticker / image
+                await sharp(buffer).rotate().png().toFile(mid);
+                await staticToVideo(mid, output);
             }
 
             const outBuf = fs.readFileSync(output);
@@ -180,6 +203,7 @@ module.exports = {
                 {
                     video: outBuf,
                     mimetype: "video/mp4",
+                    gifPlayback: animated, // plays more like sticker in chat
                     caption: "🎬 *Converted by VENOM X*"
                 },
                 { quoted: message }
@@ -188,8 +212,8 @@ module.exports = {
             console.log("TOVID ERROR:", err.message || err);
             return reply(
                 "❌ #tovid failed:\n" +
-                    String(err.message || err).slice(0, 300) +
-                    "\n\nTip: try a static sticker/image, or non-Lottie sticker."
+                    String(err.message || err).slice(0, 280) +
+                    "\n\nNeed ffmpeg + sharp. Animated webp support depends on server ffmpeg build."
             );
         } finally {
             try { fs.unlinkSync(input); } catch (e) {}

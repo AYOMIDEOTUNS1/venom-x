@@ -1,7 +1,7 @@
 /**
  * VENOM X - #get
- * Fetch a URL and show status / type / preview
- * Usage: #get https://google.com
+ * Fetch a URL → show status / type / preview
+ * If response is an image → send the image
  */
 
 const axios = require("axios");
@@ -21,6 +21,13 @@ function modeFromType(type) {
     if (type.indexOf("video") !== -1) return "VIDEO";
     if (type.indexOf("audio") !== -1) return "AUDIO";
     return "OTHER";
+}
+
+function isImageType(type, url) {
+    type = String(type || "").toLowerCase();
+    if (type.indexOf("image/") !== -1) return true;
+    // fallback by extension
+    return /\.(jpg|jpeg|png|gif|webp|bmp)(\?|$)/i.test(String(url || ""));
 }
 
 function previewBody(data) {
@@ -48,7 +55,7 @@ module.exports = {
     name: "get",
     aliases: ["fetch", "httpget", "curl"],
 
-    run: async function ({ args, reply }) {
+    run: async function ({ sock, from, args, reply, message }) {
         const input = (args || []).join(" ").trim();
         const url = pickUrl(input);
 
@@ -57,10 +64,9 @@ module.exports = {
 "╭━━〔 🌐 VENOM GET 〕━━⬣\n" +
 "┃\n" +
 "┃ Usage:\n" +
-"┃ #get https://google.com\n" +
+"┃ #get https://example.com\n" +
 "┃\n" +
-"┃ Shows status, time, type\n" +
-"┃ and a short body preview.\n" +
+"┃ Images are sent as photos.\n" +
 "┃\n" +
 "╰━━━━━━━━━━━━━━━━⬣"
             );
@@ -71,7 +77,7 @@ module.exports = {
 
             const start = Date.now();
             const res = await axios.get(url, {
-                timeout: 20000,
+                timeout: 25000,
                 maxRedirects: 5,
                 responseType: "arraybuffer",
                 validateStatus: function () {
@@ -88,9 +94,9 @@ module.exports = {
             const type =
                 (res.headers && res.headers["content-type"]) || "unknown";
             const mode = modeFromType(type);
-            const body = previewBody(res.data);
+            const buf = Buffer.from(res.data || []);
 
-            return reply(
+            const caption =
 "╭━━〔 🌐 VENOM FETCH 〕━━⬣\n" +
 "┃\n" +
 "┃ 🔗 URL\n" +
@@ -100,11 +106,31 @@ module.exports = {
 "┃ ⚡ Time   : " + ms + "ms\n" +
 "┃ 📦 Type   : " + type + "\n" +
 "┃ 🧾 Mode   : " + mode + "\n" +
+"┃ 📏 Size   : " + buf.length + " bytes\n" +
 "┃\n" +
-"┃ 📄 Preview\n" +
-"┃ " + body.split("\n").join("\n┃ ") + "\n" +
-"┃\n" +
-"╰━━━━━━━━━━━━━━━━⬣"
+"╰━━━━━━━━━━━━━━━━⬣";
+
+            // IMAGE → send photo
+            if (res.status >= 200 && res.status < 400 && isImageType(type, url) && buf.length > 500) {
+                return sock.sendMessage(
+                    from,
+                    {
+                        image: buf,
+                        caption: caption
+                    },
+                    { quoted: message }
+                );
+            }
+
+            // TEXT / HTML / JSON preview
+            const body = previewBody(buf);
+            return reply(
+                caption.replace(
+                    "╰━━━━━━━━━━━━━━━━⬣",
+                    "┃ 📄 Preview\n┃ " +
+                        body.split("\n").join("\n┃ ") +
+                        "\n┃\n╰━━━━━━━━━━━━━━━━⬣"
+                )
             );
         } catch (e) {
             return reply(
