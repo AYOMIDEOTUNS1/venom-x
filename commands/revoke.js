@@ -1,11 +1,11 @@
 /**
- * VENOM X - Group invite link
- * #invite | #grouplink | #invitelink | #glink
+ * VENOM X - Revoke group invite link
+ * #revoke | #resetlink | #revokeinvite
  */
 
 module.exports = {
-    name: "invite",
-    aliases: ["grouplink", "invitelink", "glink", "gruplink"],
+    name: "revoke",
+    aliases: ["resetlink", "revokeinvite", "revokelink"],
 
     run: async function ({ sock, from, reply, isGroup, message }) {
         if (!isGroup) {
@@ -13,13 +13,18 @@ module.exports = {
         }
 
         try {
-            const metadata = await sock.groupMetadata(from);
-            const name = metadata.subject || "Group";
-            const size = (metadata.participants || []).length;
-            const desc = (metadata.desc || "No description").slice(0, 120);
+            // revoke old code
+            await sock.groupRevokeInvite(from);
 
+            // fetch new code
             const code = await sock.groupInviteCode(from);
             const link = "https://chat.whatsapp.com/" + code;
+
+            let name = "Group";
+            try {
+                const metadata = await sock.groupMetadata(from);
+                name = metadata.subject || name;
+            } catch (e) {}
 
             let pp = null;
             try {
@@ -27,40 +32,33 @@ module.exports = {
             } catch (e) {}
 
             const caption =
-"╭━━〔 🔗 VENOM GROUP LINK 〕━━⬣\n" +
+"╭━━〔 ♻️ VENOM REVOKE 〕━━⬣\n" +
 "┃\n" +
+"┃ ✅ Old invite link revoked\n" +
 "┃ 👥 " + name + "\n" +
-"┃ 👤 Members : " + size + "\n" +
-"┃ 📝 " + desc + "\n" +
 "┃\n" +
-"┃ 🔗 Link:\n" +
+"┃ 🔗 New link:\n" +
 "┃ " + link + "\n" +
-"┃\n" +
-"┃ ♻️ Revoke: #revoke\n" +
 "┃\n" +
 "╰━━━━━━━━━━━━━━━━⬣";
 
             if (pp) {
                 await sock.sendMessage(
                     from,
-                    {
-                        image: { url: pp },
-                        caption: caption
-                    },
+                    { image: { url: pp }, caption: caption },
                     { quoted: message }
                 );
             } else {
                 await reply(caption);
             }
         } catch (e) {
-            console.log("INVITE ERROR:", e.message || e);
+            console.log("REVOKE ERROR:", e.message || e);
             return reply(
-"╭━━〔 ❌ INVITE FAILED 〕━━⬣\n" +
+"╭━━〔 ❌ REVOKE FAILED 〕━━⬣\n" +
 "┃\n" +
-"┃ Can't get group link.\n" +
 "┃ Make sure VENOM X is *admin*.\n" +
 "┃\n" +
-"┃ " + String(e.message || e).slice(0, 80) + "\n" +
+"┃ " + String(e.message || e).slice(0, 100) + "\n" +
 "┃\n" +
 "╰━━━━━━━━━━━━━━━━⬣"
             );

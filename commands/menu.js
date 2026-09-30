@@ -116,74 +116,77 @@ function buildCommands(registry) {
 
 const categories = {
     "🧠 AI": [
-        "ai", "ask", "venomai", "gpt", "vision", "imagine", "nano",
-        "translate", "rewrite", "summarize", "code", "imaginehistory",
+        "ai", "ask", "venomai", "gpt", "nano",
+        "translate", "rewrite", "summarize", "code",
         "define", "wiki", "summary"
     ],
     "🎨 IMAGE": [
-        "hd", "tohd", "sticker", "s", "toimg", "cropsticker", "getpp",
-        "stickerpack", "take", "steal", "takeall", "animepic", "pint",
-        "pinterest", "pin", "img", "wallpaper", "character", "meme",
-        "ronaldo", "elonmusk", "therock", "zuck", "waifu", "neko",
-        "tiktok-girl", "korean-girl", "japan-girl", "hijab-girl", "random-girl",
-        "itadori", "rihanna", "tomcruise"
+        "hd", "tohd", "sticker", "s", "toimg", "tovid", "cropsticker",
+        "getpp", "stickerpack", "take", "steal", "takeall",
+        "animepic", "pint", "pinterest", "wallpaper", "character",
+        "blur", "removebg", "wanted"
     ],
     "🔞 NSFW": [
-        "xv", "xvphoto", "ass", "boobs", "hentai", "waifu", "neko",
-        "pussy", "mature", "miakhalifa"
+        "xv", "xvphoto", "xnxx", "ass", "boobs", "hentai",
+        "waifu", "neko", "pussy", "mature", "deepnude"
     ],
     "📥 DOWNLOADS": [
-        "tiktok", "tt", "ytmp3", "ytmp4", "ig", "instagram", "fb",
-        "facebook", "play", "mediafire", "vv", "vv2", "tiktokboost"
+        "tiktok", "tt", "ytmp3", "ytmp4", "ig", "instagram",
+        "fb", "facebook", "play", "mediafire", "vv", "vv2",
+        "tiktokboost", "ttstalk"
     ],
-    "🎵 MUSIC": [
-        "play", "song", "music", "ytmp3", "apple", "applemusic"
+    "🎵 MUSIC / AUDIO": [
+        "play", "song", "music", "ytmp3", "tomp3",
+        "bass", "reverse", "tts"
     ],
     "👥 GROUP": [
         "tagall", "hidetag", "kick", "add", "promote", "demote",
         "warn", "warnings", "delwarn", "resetwarn",
         "antilink", "antichannelmessage", "antistatustag",
         "welcome", "goodbye", "open", "close", "groupinfo",
-        "status2", "gcstatus", "gstatus", "leave", "addmeta",
-        "pick", "couple"
+        "invite", "grouplink", "revoke", "resetlink", "grouppfp",
+        "status2", "gcstatus", "leave"
     ],
     "💰 ECONOMY": [
         "bal", "daily", "weekly", "monthly", "work", "deposit",
         "withdraw", "pay", "rob", "jail", "bail", "escape",
-        "economy", "bank", "bankupgrade", "market", "aza"
+        "economy", "bank", "bankupgrade", "market", "aza",
+        "lb", "glb", "resetgame"
     ],
     "🎮 GAMES": [
         "coinflip", "cf", "slots", "guess", "blackjack", "bj",
-        "dice", "rps", "battle", "duel", "accept", "duelgame",
-        "games", "stats", "lb", "glb", "wordchain", "wcg", "wc",
-        "ship", "rate"
-    ],
-    "✨ ANIME MENU": [
-        "anime", "animelovers", "animepic", "waifu", "neko",
-        "itadori", "hug", "kiss", "pat", "slap", "quoteanime"
+        "dice", "rps", "battle", "duel", "accept",
+        "wordchain", "wc", "bird", "flap", "snake", "ttt",
+        "hangman", "hack"
     ],
     "😝 FUN MENU": [
-        "fun", "funextra", "truth", "dare", "truthdare", "roast",
-        "compliment", "flirt", "joke", "quote", "insult", "riddle",
-        "ship", "pick", "couple", "meme", "hack", "wouldyou",
-        "dadjoke", "funfact", "advice"
+        "fun", "funextra", "truth", "dare", "truthdare",
+        "roast", "compliment", "flirt", "joke", "quote",
+        "insult", "riddle", "ship", "pick", "couple",
+        "meme", "nmeme", "style", "wouldyou", "dadjoke",
+        "funfact", "advice", "rate",
+        "ronaldo", "elonmusk", "therock", "zuck",
+        "tiktok-girl", "korean-girl", "japan-girl",
+        "itadori", "waifu", "neko"
     ],
-    "📚 MATURE / INFO": [
-        "mature", "define", "wiki", "crypto", "currency",
-        "remind", "summary", "rewrite", "bio"
+    "✨ ANIME": [
+        "anime", "animelovers", "animepic", "waifu", "neko",
+        "itadori", "quoteanime"
     ],
     "🛠️ TOOLS": [
-        "web2apk", "ss", "reactch", "getjid", "whoami",
-        "vcf", "save", "pair", "pint", "hd", "toimg"
+        "get", "url", "github", "web2apk", "reactch", "getjid",
+        "whoami", "vcf", "save", "pair", "setfullpfp",
+        "ban", "unban"
     ],
     "⚙️ UTILITY": [
         "ping", "p", "alive", "uptime", "up", "menu", "m", "help",
         "owner", "profile", "info", "delete", "del",
-        "autoreact", "areact", "refresh", "sleep"
+        "autoreact", "refresh", "sleep"
     ],
     "👑 OWNER": [
         "public", "private", "shutdown", "update", "block",
-        "unblock", "sudo", "leave", "reset"
+        "unblock", "sudo", "leave", "reset", "ban", "unban",
+        "setfullpfp", "pair"
     ]
 };
 
