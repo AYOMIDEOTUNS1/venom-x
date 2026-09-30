@@ -1,6 +1,6 @@
 /**
- * VENOM X - #tovid
- * Reply to sticker / image / gif → video (mp4)
+ * VENOM X - #tovid (fixed sticker support)
+ * Reply sticker / image / gif → mp4
  */
 
 const fs = require("fs");
@@ -9,6 +9,7 @@ const os = require("os");
 const crypto = require("crypto");
 const { exec } = require("child_process");
 const { promisify } = require("util");
+const sharp = require("sharp");
 const { downloadContentFromMessage } = require("@whiskeysockets/baileys");
 
 const execAsync = promisify(exec);
@@ -49,27 +50,44 @@ function getQuoted(message) {
 async function download(msg, type) {
     const node = msg[type + "Message"];
     if (!node) throw new Error("Missing " + type);
-    const stream = await downloadContentFromMessage(node, type === "sticker" ? "sticker" : type);
+    const stream = await downloadContentFromMessage(
+        node,
+        type === "sticker" ? "sticker" : type
+    );
     const chunks = [];
     for await (const chunk of stream) chunks.push(chunk);
-    return Buffer.concat(chunks);
+    const buf = Buffer.concat(chunks);
+    if (!buf.length) throw new Error("Empty download");
+    return buf;
 }
 
-async function toVideo(inputPath, outputPath, isImage) {
-    // image → 3s video; animated sticker/gif → normal video
-    if (isImage) {
-        await execAsync(
-            'ffmpeg -hide_banner -loglevel error -y -loop 1 -i "' +
-                inputPath +
-                '" -t 3 -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" -c:v libx264 -pix_fmt yuv420p -movflags +faststart "' +
-                outputPath +
-                '"'
-        );
-    } else {
+async function imageToVideo(inputPath, outputPath) {
+    await execAsync(
+        'ffmpeg -hide_banner -loglevel error -y -loop 1 -i "' +
+            inputPath +
+            '" -t 3 -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" -c:v libx264 -pix_fmt yuv420p -movflags +faststart "' +
+            outputPath +
+            '"'
+    );
+}
+
+async function mediaToVideo(inputPath, outputPath) {
+    // try normal decode
+    try {
         await execAsync(
             'ffmpeg -hide_banner -loglevel error -y -i "' +
                 inputPath +
-                '" -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" -c:v libx264 -pix_fmt yuv420p -movflags +faststart -an "' +
+                '" -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" -c:v libx264 -pix_fmt yuv420p -movflags +faststart -an "' +
+                outputPath +
+                '"'
+        );
+        return;
+    } catch (e1) {
+        // animated webp sometimes needs this
+        await execAsync(
+            'ffmpeg -hide_banner -loglevel error -y -c:v libwebp -i "' +
+                inputPath +
+                '" -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" -c:v libx264 -pix_fmt yuv420p -movflags +faststart -an "' +
                 outputPath +
                 '"'
         );
@@ -86,46 +104,73 @@ module.exports = {
         if (!quoted) {
             return reply(
 "╭━━〔 🎬 VENOM TOVID 〕━━⬣\n" +
-"┃\n" +
 "┃ Reply to:\n" +
-"┃ • animated sticker\n" +
+"┃ • sticker (static/animated)\n" +
 "┃ • image\n" +
 "┃ • gif / short video\n" +
 "┃\n" +
-"┃ Then type:\n" +
-"┃ #tovid\n" +
-"┃\n" +
+"┃ Then: #tovid\n" +
 "╰━━━━━━━━━━━━━━━━⬣"
             );
         }
 
+        // Lottie stickers can't be converted easily
+        if (
+            quoted.stickerMessage &&
+            (quoted.stickerMessage.isLottie || quoted.stickerMessage.lottie)
+        ) {
+            return reply("❌ Lottie stickers can't be converted to video.");
+        }
+
         let type = null;
-        let isImage = false;
+        let mode = "media"; // media | image
 
         if (quoted.stickerMessage) {
             type = "sticker";
-            isImage = !(quoted.stickerMessage.isAnimated || quoted.stickerMessage.isLottie);
+            // static sticker → treat as image via sharp (most reliable)
+            if (!quoted.stickerMessage.isAnimated) {
+                mode = "image";
+            }
         } else if (quoted.imageMessage) {
             type = "image";
-            isImage = true;
+            mode = "image";
         } else if (quoted.videoMessage) {
             type = "video";
-            isImage = false;
+            mode = "media";
         } else {
             return reply("❌ Reply to a sticker, image, or gif/video.");
         }
 
         const input = tmp(type === "sticker" ? "webp" : type === "image" ? "jpg" : "mp4");
+        const mid = tmp("png");
         const output = tmp("mp4");
 
         try {
             await reply("🎬 Converting to video...");
 
             const buffer = await download(quoted, type);
-            if (!buffer || !buffer.length) throw new Error("Download failed");
-
             fs.writeFileSync(input, buffer);
-            await toVideo(input, output, isImage);
+
+            if (mode === "image") {
+                // webp/jpg → png with sharp, then 3s video
+                await sharp(buffer)
+                    .rotate()
+                    .png()
+                    .toFile(mid);
+
+                await imageToVideo(mid, output);
+            } else {
+                // animated sticker / video
+                try {
+                    await mediaToVideo(input, output);
+                } catch (e) {
+                    // last fallback: first frame via sharp → short video
+                    await sharp(buffer, { animated: false, pages: 1 })
+                        .png()
+                        .toFile(mid);
+                    await imageToVideo(mid, output);
+                }
+            }
 
             const outBuf = fs.readFileSync(output);
             if (!outBuf.length) throw new Error("Empty output video");
@@ -143,11 +188,12 @@ module.exports = {
             console.log("TOVID ERROR:", err.message || err);
             return reply(
                 "❌ #tovid failed:\n" +
-                    (err.message || String(err)) +
-                    "\n\nMake sure ffmpeg is installed on the server."
+                    String(err.message || err).slice(0, 300) +
+                    "\n\nTip: try a static sticker/image, or non-Lottie sticker."
             );
         } finally {
             try { fs.unlinkSync(input); } catch (e) {}
+            try { fs.unlinkSync(mid); } catch (e) {}
             try { fs.unlinkSync(output); } catch (e) {}
         }
     }
