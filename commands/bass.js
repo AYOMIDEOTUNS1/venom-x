@@ -1,6 +1,6 @@
 /**
- * VENOM X - #bass
- * Reply to voice note / audio / video
+ * VENOM X - #bass (strong quote detection)
+ * Reply to voice note / audio / video → bass boost
  */
 
 const fs = require("fs");
@@ -22,63 +22,112 @@ function tmp(ext) {
 
 function unwrap(msg) {
     let cur = msg;
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 10; i++) {
         if (!cur || typeof cur !== "object") break;
         const wrap =
             (cur.ephemeralMessage && cur.ephemeralMessage.message) ||
             (cur.viewOnceMessage && cur.viewOnceMessage.message) ||
             (cur.viewOnceMessageV2 && cur.viewOnceMessageV2.message) ||
-            (cur.viewOnceMessageV2Extension && cur.viewOnceMessageV2Extension.message) ||
-            (cur.documentWithCaptionMessage && cur.documentWithCaptionMessage.message) ||
+            (cur.viewOnceMessageV2Extension &&
+                cur.viewOnceMessageV2Extension.message) ||
+            (cur.documentWithCaptionMessage &&
+                cur.documentWithCaptionMessage.message) ||
+            (cur.viewOnceMessageV2Extension &&
+                cur.viewOnceMessageV2Extension.message) ||
             null;
         if (!wrap) break;
         cur = wrap;
     }
-    return cur;
+    return cur || {};
 }
 
-function getQuotedRoot(message) {
-    const m = message.message || {};
-    const candidates = [
-        m.extendedTextMessage && m.extendedTextMessage.contextInfo,
-        m.imageMessage && m.imageMessage.contextInfo,
-        m.videoMessage && m.videoMessage.contextInfo,
-        m.audioMessage && m.audioMessage.contextInfo,
-        m.documentMessage && m.documentMessage.contextInfo,
-        m.buttonsResponseMessage && m.buttonsResponseMessage.contextInfo,
-        m.templateButtonReplyMessage && m.templateButtonReplyMessage.contextInfo,
-        m.listResponseMessage && m.listResponseMessage.contextInfo
-    ];
-
-    for (let i = 0; i < candidates.length; i++) {
-        const ctx = candidates[i];
-        if (ctx && ctx.quotedMessage) {
-            return unwrap(ctx.quotedMessage);
-        }
-    }
-    return null;
-}
-
-function findMedia(node) {
-    if (!node) return null;
+function walkFindMedia(node, depth) {
+    if (!node || typeof node !== "object" || depth > 8) return null;
 
     if (node.audioMessage) {
-        return { type: "audio", msg: node.audioMessage, ext: "ogg" };
+        return { kind: "audio", media: node.audioMessage };
     }
     if (node.videoMessage) {
-        return { type: "video", msg: node.videoMessage, ext: "mp4" };
+        return { kind: "video", media: node.videoMessage };
     }
     if (node.documentMessage) {
         const mime = String(node.documentMessage.mimetype || "");
-        if (mime.indexOf("audio") !== -1 || mime.indexOf("video") !== -1) {
+        if (mime.includes("audio") || mime.includes("video") || mime.includes("ogg")) {
             return {
-                type: mime.indexOf("video") !== -1 ? "video" : "audio",
-                msg: node.documentMessage,
-                ext: mime.indexOf("video") !== -1 ? "mp4" : "mp3"
+                kind: mime.includes("video") ? "video" : "audio",
+                media: node.documentMessage,
+                asDocument: true
             };
         }
     }
+
+    const keys = Object.keys(node);
+    for (let i = 0; i < keys.length; i++) {
+        const v = node[keys[i]];
+        if (v && typeof v === "object") {
+            const hit = walkFindMedia(v, depth + 1);
+            if (hit) return hit;
+        }
+    }
     return null;
+}
+
+function getQuotedMessage(message) {
+    const root = message.message || {};
+    const unwrapped = unwrap(root);
+
+    // common reply locations
+    const contexts = [];
+    const bag = [root, unwrapped];
+
+    for (let b = 0; b < bag.length; b++) {
+        const m = bag[b];
+        if (!m || typeof m !== "object") continue;
+        const keys = Object.keys(m);
+        for (let i = 0; i < keys.length; i++) {
+            const part = m[keys[i]];
+            if (part && part.contextInfo && part.contextInfo.quotedMessage) {
+                contexts.push(part.contextInfo);
+            }
+        }
+        if (m.contextInfo && m.contextInfo.quotedMessage) {
+            contexts.push(m.contextInfo);
+        }
+    }
+
+    for (let i = 0; i < contexts.length; i++) {
+        const q = unwrap(contexts[i].quotedMessage);
+        const media = walkFindMedia(q, 0);
+        if (media) return media;
+    }
+
+    // sometimes people send command as caption on media (rare)
+    const direct = walkFindMedia(unwrapped, 0);
+    if (direct) return direct;
+
+    return null;
+}
+
+async function downloadMedia(mediaObj) {
+    const kind = mediaObj.asDocument
+        ? "document"
+        : mediaObj.kind; // audio | video | document
+
+    const stream = await downloadContentFromMessage(mediaObj.media, kind);
+    const chunks = [];
+    for await (const chunk of stream) chunks.push(chunk);
+    const buffer = Buffer.concat(chunks);
+    if (!buffer.length) throw new Error("Downloaded media is empty");
+    return buffer;
+}
+
+async function hasFfmpeg() {
+    try {
+        await execAsync("ffmpeg -version");
+        return true;
+    } catch (e) {
+        return false;
+    }
 }
 
 module.exports = {
@@ -86,41 +135,40 @@ module.exports = {
     aliases: ["bassboost", "earrape"],
 
     run: async function ({ sock, from, message, args, reply }) {
-        const quoted = getQuotedRoot(message);
-        const media = findMedia(quoted);
+        const found = getQuotedMessage(message);
 
-        if (!media) {
+        if (!found) {
             return reply(
 "╭━━〔 🔊 VENOM BASS 〕━━⬣\n" +
 "┃\n" +
-"┃ Reply to a *voice note*, *audio*,\n" +
-"┃ or *video* then type:\n" +
+"┃ Reply to a *voice note* / *audio*\n" +
+"┃ or *video*, then send:\n" +
 "┃\n" +
 "┃ #bass\n" +
 "┃ #bass 20\n" +
+"┃\n" +
+"┃ Tip: long-press the audio → Reply\n" +
+"┃ then type #bass\n" +
 "┃\n" +
 "╰━━━━━━━━━━━━━━━━⬣"
             );
         }
 
+        if (!(await hasFfmpeg())) {
+            return reply(
+"❌ ffmpeg is not installed on this server.\n" +
+"Install ffmpeg, then restart the bot."
+            );
+        }
+
         const gain = Math.min(40, Math.max(5, parseInt(args[0], 10) || 15));
-        const input = tmp(media.ext);
+        const input = tmp(found.kind === "video" ? "mp4" : "ogg");
         const output = tmp("mp3");
 
         try {
             await reply("🔊 Bass boosting (" + gain + ")...");
 
-            // document download type still uses document in some baileys versions
-            let dlType = media.type;
-            if (quoted.documentMessage) dlType = "document";
-
-            const stream = await downloadContentFromMessage(media.msg, dlType);
-            const chunks = [];
-            for await (const c of stream) chunks.push(c);
-            const buffer = Buffer.concat(chunks);
-
-            if (!buffer.length) throw new Error("Downloaded audio is empty");
-
+            const buffer = await downloadMedia(found);
             fs.writeFileSync(input, buffer);
 
             await execAsync(
@@ -134,7 +182,7 @@ module.exports = {
             );
 
             const out = fs.readFileSync(output);
-            if (!out.length) throw new Error("FFmpeg produced empty file");
+            if (!out.length) throw new Error("Empty ffmpeg output");
 
             await sock.sendMessage(
                 from,
@@ -150,8 +198,7 @@ module.exports = {
             console.log("BASS ERROR:", e.message || e);
             return reply(
                 "❌ Bass failed:\n" +
-                    String(e.message || e).slice(0, 220) +
-                    "\n\nMake sure ffmpeg is installed and you replied to the audio."
+                    String(e.message || e).slice(0, 250)
             );
         } finally {
             try { fs.unlinkSync(input); } catch (e) {}

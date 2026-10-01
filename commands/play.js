@@ -1,13 +1,14 @@
 /**
- * VENOM X PLAY (Render-safe)
- * - Try YouTube (ytdl)
- * - If 429/blocked → iTunes 30s preview (works on Render)
- * - Always show song info + YT link
+ * VENOM X PLAY
+ * Search: OmegaTech Apple Music
+ * Download: OmegaTech action=download (fallback: YT / iTunes preview)
+ *
+ * #play Alone
+ * #play Alone 2
  */
 
 const axios = require("axios");
 const yts = require("yt-search");
-const ytdl = require("@distube/ytdl-core");
 const { getSettings } = require("../lib/settingsCache");
 
 const UA =
@@ -21,194 +22,228 @@ function px() {
     }
 }
 
-function formatDur(sec) {
-    sec = Math.floor(Number(sec) || 0);
-    const m = Math.floor(sec / 60);
-    const s = sec % 60;
-    return m + ":" + String(s).padStart(2, "0");
+async function appleSearch(query) {
+    const { data } = await axios.get(
+        "https://api.omegatech.app/api/Search/Applemusic",
+        {
+            params: { action: "search", query: query },
+            timeout: 25000,
+            headers: { "User-Agent": "VENOM-X" }
+        }
+    );
+
+    if (!data || data.success === false) {
+        throw new Error((data && data.error) || "Apple search failed");
+    }
+
+    const results =
+        (data.data && data.data.results) ||
+        data.results ||
+        [];
+
+    if (!Array.isArray(results) || !results.length) {
+        throw new Error("No songs found");
+    }
+    return results;
 }
 
-function streamToBuffer(stream) {
-    return new Promise(function (resolve, reject) {
-        const chunks = [];
-        let total = 0;
-        stream.on("data", function (c) {
-            chunks.push(c);
-            total += c.length;
-            // safety: stop insane sizes
-            if (total > 40 * 1024 * 1024) {
-                stream.destroy();
-                reject(new Error("Audio too large"));
-            }
-        });
-        stream.on("end", function () {
-            const buf = Buffer.concat(chunks);
-            if (buf.length < 1500) return reject(new Error("Empty audio"));
-            resolve(buf);
-        });
-        stream.on("error", reject);
-    });
-}
+async function appleDownload(trackUrl) {
+    const { data } = await axios.get(
+        "https://api.omegatech.app/api/Search/Applemusic",
+        {
+            params: { action: "download", url: trackUrl },
+            timeout: 60000,
+            headers: { "User-Agent": "VENOM-X" }
+        }
+    );
 
-async function itunesSearch(query) {
-    const res = await axios.get("https://itunes.apple.com/search", {
-        params: { term: query, media: "music", entity: "song", limit: 5 },
-        timeout: 12000,
-        headers: { "User-Agent": UA }
-    });
-    const list = (res.data && res.data.results) || [];
-    return list.map(function (t) {
-        return {
-            title: t.trackName || "Unknown",
-            artist: t.artistName || "Unknown",
-            album: t.collectionName || "",
-            cover: String(t.artworkUrl100 || "").replace("100x100bb", "600x600bb"),
-            duration: Math.floor((t.trackTimeMillis || 0) / 1000),
-            preview: t.previewUrl || null,
-            query: (t.trackName || "") + " " + (t.artistName || "")
-        };
-    });
-}
+    if (!data || data.success === false) {
+        throw new Error((data && (data.error || data.message)) || "Download failed");
+    }
 
-async function ytFind(query) {
-    const r = await yts(query);
-    const v = r.videos && r.videos[0];
-    if (!v || !v.videoId) return null;
+    const d = data.data || data.result || data;
+    const audioUrl =
+        d.downloadUrl ||
+        d.download_url ||
+        d.url ||
+        d.link ||
+        d.audio ||
+        d.dl ||
+        (d.data && (d.data.downloadUrl || d.data.url || d.data.link));
+
+    if (!audioUrl) throw new Error("No downloadUrl in response");
+
     return {
-        id: v.videoId,
+        audioUrl: audioUrl,
+        title: d.title || null,
+        artist: d.artist || null,
+        cover: d.cover || d.image || null
+    };
+}
+
+async function downloadBuffer(url) {
+    const res = await axios.get(url, {
+        responseType: "arraybuffer",
+        timeout: 120000,
+        maxContentLength: 40 * 1024 * 1024,
+        headers: { "User-Agent": UA, Accept: "*/*" }
+    });
+    const buf = Buffer.from(res.data);
+    if (!buf || buf.length < 1000) throw new Error("Audio file too small");
+    return buf;
+}
+
+async function ytFallback(query) {
+    const r = await yts(query + " audio");
+    const v = r.videos && r.videos[0];
+    if (!v) throw new Error("No YouTube fallback");
+    return {
         title: v.title,
-        url: "https://www.youtube.com/watch?v=" + v.videoId,
-        seconds: v.seconds || 0,
+        url: v.url,
         thumbnail: v.thumbnail
     };
 }
 
-async function ytdlFull(url) {
-    const info = await ytdl.getInfo(url, {
-        requestOptions: {
-            headers: {
-                "User-Agent": UA,
-                "Accept-Language": "en-US,en;q=0.9"
-            }
-        }
-    });
-    const format = ytdl.chooseFormat(info.formats, {
-        quality: "highestaudio",
-        filter: "audioonly"
-    });
-    if (!format) throw new Error("No audio format");
-    const stream = ytdl.downloadFromInfo(info, {
-        format: format,
-        highWaterMark: 1 << 25
-    });
-    const buffer = await streamToBuffer(stream);
-    return {
-        buffer: buffer,
-        mime: format.mimeType || "audio/webm",
-        source: "youtube"
-    };
-}
-
-async function downloadUrl(url) {
-    const res = await axios.get(url, {
-        responseType: "arraybuffer",
-        timeout: 30000,
-        headers: { "User-Agent": UA }
-    });
-    const buffer = Buffer.from(res.data);
-    if (buffer.length < 1000) throw new Error("Preview too small");
-    return buffer;
-}
-
 module.exports = {
     name: "play",
-    aliases: ["song", "music", "ytplay"],
+    aliases: ["song", "music", "apple", "applemusic"],
 
     run: async function ({ sock, from, args, reply, message }) {
         const p = px();
-        const text = args.join(" ").trim();
+        const text = (args || []).join(" ").trim();
 
         if (!text) {
             return reply(
-"╭━━〔 🎵 VENOM X PLAY 〕━━⬣\n\n" +
-"Usage:\n" +
-p + "play <song name>\n\n" +
-"On Render: full YT may be blocked (429).\n" +
-"Bot will send preview + link if needed.\n\n" +
+"╭━━〔 🎵 VENOM X PLAY 〕━━⬣\n" +
+"┃\n" +
+"┃ Usage:\n" +
+"┃ " + p + "play <song name>\n" +
+"┃ " + p + "play Alone\n" +
+"┃ " + p + "play Alone 2\n" +
+"┃\n" +
+"┃ Source: Apple Music search\n" +
+"┃\n" +
 "╰━━━━━━━━━━━━━━━━⬣"
             );
         }
 
+        const parts = text.split(/\s+/);
+        const last = parts[parts.length - 1];
+        const pick = /^\d+$/.test(last) ? parseInt(last, 10) : 1;
+        const query = /^\d+$/.test(last) ? parts.slice(0, -1).join(" ") : text;
+
+        if (!query) return reply("❌ Song name required.");
+
         try {
-            await reply("🔍 Searching: *" + text + "*");
+            await reply("🔍 Searching Apple Music: *" + query + "*");
 
-            let tracks = [];
-            try {
-                tracks = await itunesSearch(text);
-            } catch (e) {}
+            const results = await appleSearch(query);
+            const index = Math.min(Math.max(pick, 1), results.length) - 1;
+            const track = results[index];
 
-            const meta = tracks[0] || null;
-            const yt = await ytFind(meta ? meta.query : text);
+            const title = track.title || query;
+            const artist = track.artist || "Unknown";
+            const cover = track.cover || null;
+            const trackUrl = track.url;
 
-            const title = (meta && meta.title) || (yt && yt.title) || text;
-            const artist = (meta && meta.artist) || "Unknown";
-            const cover = (meta && meta.cover) || (yt && yt.thumbnail) || null;
-            const dur =
-                meta && meta.duration
-                    ? formatDur(meta.duration)
-                    : yt && yt.seconds
-                      ? formatDur(yt.seconds)
-                      : "";
-
-            let audioBuffer = null;
-            let mime = "audio/mpeg";
-            let source = "";
-            let note = "";
-
-            // 1) Try full YouTube (often 429 on Render)
-            if (yt && yt.url) {
-                try {
-                    const full = await ytdlFull(yt.url);
-                    audioBuffer = full.buffer;
-                    mime = /mp4|m4a/i.test(full.mime)
-                        ? "audio/mp4"
-                        : /webm/i.test(full.mime)
-                          ? "audio/webm"
-                          : "audio/mpeg";
-                    source = "youtube";
-                } catch (e) {
-                    console.log("YT full failed:", e.message);
-                    note = "YouTube blocked on server (" + String(e.message).slice(0, 40) + ")";
+            // show choices if user didn't pick a number and many results
+            if (!/^\d+$/.test(last) && results.length > 1) {
+                let list =
+"╭━━〔 🎵 RESULTS 〕━━⬣\n" +
+"┃ Query: " + query + "\n" +
+"┃\n";
+                for (let i = 0; i < Math.min(results.length, 5); i++) {
+                    const r = results[i];
+                    list +=
+                        "┃ " +
+                        (i + 1) +
+                        ". " +
+                        (r.title || "?") +
+                        " — " +
+                        (r.artist || "?") +
+                        "\n";
                 }
+                list +=
+"┃\n" +
+"┃ Pick:\n" +
+"┃ " + p + "play " + query + " 2\n" +
+"┃\n" +
+"┃ Downloading #1...\n" +
+"╰━━━━━━━━━━━━━━━━⬣";
+                await reply(list);
             }
 
-            // 2) iTunes preview fallback (works on Render)
-            if (!audioBuffer && meta && meta.preview) {
+            await reply("⬇️ Downloading: *" + title + "* — *" + artist + "*");
+
+            let audioBuf = null;
+            let source = "apple";
+            let finalTitle = title;
+            let finalArtist = artist;
+            let finalCover = cover;
+
+            // 1) OmegaTech Apple download
+            try {
+                if (!trackUrl) throw new Error("No Apple track url");
+                const dl = await appleDownload(trackUrl);
+                audioBuf = await downloadBuffer(dl.audioUrl);
+                if (dl.title) finalTitle = dl.title;
+                if (dl.artist) finalArtist = dl.artist;
+                if (dl.cover) finalCover = dl.cover;
+            } catch (e1) {
+                console.log("APPLE DL FAIL:", e1.message);
+
+                // 2) iTunes preview fallback (30s) — reliable on Render
                 try {
-                    audioBuffer = await downloadUrl(meta.preview);
-                    mime = "audio/mpeg";
-                    source = "itunes-preview";
-                    note = "Full track blocked on Render. Sent 30s preview.";
-                } catch (e) {
-                    console.log("Preview failed:", e.message);
+                    const it = await axios.get("https://itunes.apple.com/search", {
+                        params: {
+                            term: title + " " + artist,
+                            media: "music",
+                            entity: "song",
+                            limit: 1
+                        },
+                        timeout: 12000,
+                        headers: { "User-Agent": UA }
+                    });
+                    const t = it.data && it.data.results && it.data.results[0];
+                    if (t && t.previewUrl) {
+                        audioBuf = await downloadBuffer(t.previewUrl);
+                        source = "itunes-preview";
+                        if (t.artworkUrl100) {
+                            finalCover = String(t.artworkUrl100).replace(
+                                "100x100bb",
+                                "600x600bb"
+                            );
+                        }
+                    } else {
+                        throw new Error("No iTunes preview");
+                    }
+                } catch (e2) {
+                    throw new Error(
+                        "Apple download failed (" +
+                            e1.message +
+                            "). Preview also failed (" +
+                            e2.message +
+                            ")."
+                    );
                 }
             }
 
             const caption =
-                "╭━━〔 🎵 VENOM X PLAY 〕━━⬣\n" +
-                "┃ 🎧 " + title + "\n" +
-                "┃ 👤 " + artist + "\n" +
-                (dur ? "┃ ⏱️ " + dur + "\n" : "") +
-                (source ? "┃ 📡 " + source + "\n" : "") +
-                (yt && yt.url ? "┃ 🔗 " + yt.url + "\n" : "") +
-                (note ? "┃ ⚠️ " + note + "\n" : "") +
-                "╰━━━━━━━━━━━━━━━━⬣";
+"╭━━〔 🎵 VENOM X PLAY 〕━━⬣\n" +
+"┃ 🎧 " + finalTitle + "\n" +
+"┃ 👤 " + finalArtist + "\n" +
+"┃ 📡 " + source + "\n" +
+(source === "itunes-preview"
+    ? "┃ ⚠️ 30s preview (full dl blocked)\n"
+    : "") +
+(trackUrl ? "┃ 🔗 Apple Music track\n" : "") +
+"╰━━━━━━━━━━━━━━━━⬣";
 
-            if (cover) {
+            if (finalCover) {
                 try {
-                    const img = await axios.get(cover, {
+                    const img = await axios.get(finalCover, {
                         responseType: "arraybuffer",
-                        timeout: 12000,
+                        timeout: 15000,
                         headers: { "User-Agent": UA }
                     });
                     await sock.sendMessage(
@@ -223,39 +258,38 @@ p + "play <song name>\n\n" +
                 await reply(caption);
             }
 
-            if (audioBuffer) {
-                try {
-                    await sock.sendMessage(
-                        from,
-                        {
-                            audio: audioBuffer,
-                            mimetype: mime,
-                            fileName: String(title).slice(0, 40) + ".mp3",
-                            ptt: false
-                        },
-                        { quoted: message }
-                    );
-                } catch (e) {
-                    await sock.sendMessage(
-                        from,
-                        {
-                            document: audioBuffer,
-                            mimetype: "audio/mpeg",
-                            fileName: String(title).slice(0, 40) + ".mp3",
-                            caption: "🎵 " + title
-                        },
-                        { quoted: message }
-                    );
-                }
-            } else {
-                await reply(
-"❌ Could not fetch audio from this server.\n" +
-(yt && yt.url ? "Open: " + yt.url : "Try another song.")
+            try {
+                await sock.sendMessage(
+                    from,
+                    {
+                        audio: audioBuf,
+                        mimetype: "audio/mpeg",
+                        fileName: String(finalTitle).slice(0, 40) + ".mp3",
+                        ptt: false
+                    },
+                    { quoted: message }
+                );
+            } catch (e) {
+                await sock.sendMessage(
+                    from,
+                    {
+                        document: audioBuf,
+                        mimetype: "audio/mpeg",
+                        fileName: String(finalTitle).slice(0, 40) + ".mp3",
+                        caption: "🎵 " + finalTitle
+                    },
+                    { quoted: message }
                 );
             }
         } catch (err) {
             console.log("PLAY ERROR:", err.message || err);
-            return reply("❌ Play failed:\n" + String(err.message || err).slice(0, 300));
+            return reply(
+"╭━━〔 ❌ PLAY FAILED 〕━━⬣\n" +
+"┃\n" +
+"┃ " + String(err.message || err).slice(0, 280) + "\n" +
+"┃\n" +
+"╰━━━━━━━━━━━━━━━━⬣"
+            );
         }
     }
 };
