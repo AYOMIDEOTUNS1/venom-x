@@ -1,203 +1,199 @@
+/**
+ * VENOM X - Instagram download
+ * #ig <url> | #instagram <url>
+ */
+
 const axios = require("axios");
-const { runYtDlp } = require("../lib/ytdlp");
+const fs = require("fs");
+const path = require("path");
+const os = require("os");
+const crypto = require("crypto");
+const { exec } = require("child_process");
+const { promisify } = require("util");
+const execAsync = promisify(exec);
+
+function tmp(ext) {
+    return path.join(
+        os.tmpdir(),
+        "venom_ig_" + crypto.randomBytes(6).toString("hex") + "." + ext
+    );
+}
 
 function pickUrl(text) {
     const m = String(text || "").match(/(https?:\/\/[^\s]+)/i);
     return m ? m[0] : "";
 }
 
-function cleanUrl(url) {
-    url = String(url || "").trim();
-    if (url.includes(" ")) url = url.split(/\s+/)[0];
-    if (url.includes("?")) {
-        // keep shortcode path; ig sometimes needs query, but usually fine stripped
-        // only strip tracking junk if clearly present
+async function remuxMp4(inputBuf) {
+    const inn = tmp("bin");
+    const out = tmp("mp4");
+    fs.writeFileSync(inn, inputBuf);
+    try {
+        await execAsync(
+            'ffmpeg -hide_banner -loglevel error -y -i "' +
+                inn +
+                '" -c copy -movflags +faststart "' +
+                out +
+                '"'
+        );
+        const buf = fs.readFileSync(out);
+        if (buf.length > 1000) return buf;
+    } catch (e) {
+        try {
+            await execAsync(
+                'ffmpeg -hide_banner -loglevel error -y -i "' +
+                    inn +
+                    '" -c:v libx264 -c:a aac -movflags +faststart "' +
+                    out +
+                    '"'
+            );
+            const buf = fs.readFileSync(out);
+            if (buf.length > 1000) return buf;
+        } catch (e2) {}
+    } finally {
+        try { fs.unlinkSync(inn); } catch (e) {}
+        try { fs.unlinkSync(out); } catch (e) {}
     }
-    return url;
+    return inputBuf;
 }
 
-function isInstagram(url) {
-    url = String(url || "").toLowerCase();
-    return (
-        url.includes("instagram.com") ||
-        url.includes("instagr.am")
-    );
+async function fetchApis(url) {
+    const list = [
+        "https://api.siputzx.my.id/api/d/igdl?url=" + encodeURIComponent(url),
+        "https://api.agatz.xyz/api/instagram?url=" + encodeURIComponent(url)
+    ];
+    let last = null;
+    for (let i = 0; i < list.length; i++) {
+        try {
+            const { data } = await axios.get(list[i], {
+                timeout: 45000,
+                headers: { "User-Agent": "VENOM-X" }
+            });
+            if (data) return data;
+        } catch (e) {
+            last = e;
+        }
+    }
+    throw last || new Error("All IG APIs failed");
+}
+
+function pickItems(data) {
+    const d = data.data || data.result || data;
+    const urls = [];
+
+    if (Array.isArray(d)) {
+        for (let i = 0; i < d.length; i++) {
+            if (typeof d[i] === "string") urls.push(d[i]);
+            else if (d[i] && d[i].url) urls.push(d[i].url);
+            else if (d[i] && d[i].download) urls.push(d[i].download);
+        }
+    } else if (d) {
+        if (d.url) urls.push(d.url);
+        if (d.video) urls.push(d.video);
+        if (d.media) urls.push(d.media);
+        if (Array.isArray(d.medias)) {
+            for (let i = 0; i < d.medias.length; i++) {
+                if (d.medias[i] && d.medias[i].url) urls.push(d.medias[i].url);
+            }
+        }
+        if (Array.isArray(d.images)) {
+            for (let i = 0; i < d.images.length; i++) urls.push(d.images[i]);
+        }
+    }
+    return urls.filter(Boolean);
 }
 
 module.exports = {
     name: "instagram",
-    aliases: ["ig", "igdl", "igreels", "igvideo"],
+    aliases: ["ig", "igdl", "insta"],
 
     run: async function ({ sock, from, args, reply, message }) {
-        let url = args.join(" ").trim();
-
+        let url = pickUrl((args || []).join(" "));
         if (!url) {
             const ctx =
-                (message.message &&
-                    message.message.extendedTextMessage &&
-                    message.message.extendedTextMessage.contextInfo) ||
-                {};
-            const quoted = ctx.quotedMessage;
-            if (quoted) {
-                url =
-                    quoted.conversation ||
-                    (quoted.extendedTextMessage && quoted.extendedTextMessage.text) ||
-                    (quoted.imageMessage && quoted.imageMessage.caption) ||
-                    (quoted.videoMessage && quoted.videoMessage.caption) ||
-                    "";
+                message.message &&
+                message.message.extendedTextMessage &&
+                message.message.extendedTextMessage.contextInfo;
+            const q = ctx && ctx.quotedMessage;
+            if (q) {
+                url = pickUrl(
+                    q.conversation ||
+                        (q.extendedTextMessage && q.extendedTextMessage.text) ||
+                        ""
+                );
             }
         }
 
-        url = cleanUrl(pickUrl(url) || url);
-
-        if (!url) {
+        if (!url || !/instagram\.com|instagr\.am/i.test(url)) {
             return reply(
-`╭━━〔 📸 VENOM X INSTAGRAM 〕━━⬣
-┃
-┃ Usage:
-┃ #ig <Instagram link>
-┃
-┃ Supports:
-┃ • Reels
-┃ • Posts
-┃ • Videos
-┃
-┃ Or reply to an IG link:
-┃ #ig
-┃
-╰━━━━━━━━━━━━━━━━⬣`
+"╭━━〔 📸 VENOM IG 〕━━⬣\n" +
+"┃ Usage:\n" +
+"┃ #ig <instagram url>\n" +
+"╰━━━━━━━━━━━━━━━━⬣"
             );
         }
-
-        if (!isInstagram(url)) {
-            return reply("❌ Invalid Instagram link.");
-        }
-
-        try {
-            await sock.sendMessage(from, {
-                react: { text: "⏳", key: message.key }
-            }).catch(function () {});
-        } catch (e) {}
 
         try {
             await reply("📥 Downloading Instagram media...");
 
-            let mediaList = [];
+            const data = await fetchApis(url);
+            const items = pickItems(data);
+            if (!items.length) throw new Error("No media URL found");
 
-            // API attempt
-            try {
-                const { data } = await axios.get(
-                    "https://api.siputzx.my.id/api/d/ig",
-                    {
-                        params: { url: url },
-                        timeout: 45000,
-                        headers: { "User-Agent": "VENOM-X" }
+            // send up to 3 items
+            for (let i = 0; i < Math.min(items.length, 3); i++) {
+                const mediaUrl = items[i];
+                const bin = await axios.get(mediaUrl, {
+                    responseType: "arraybuffer",
+                    timeout: 120000,
+                    maxContentLength: 80 * 1024 * 1024,
+                    headers: {
+                        "User-Agent":
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0",
+                        Referer: "https://www.instagram.com/",
+                        Accept: "*/*"
                     }
-                );
+                });
 
-                const d = data && (data.data || data.result || data);
-                if (Array.isArray(d)) {
-                    mediaList = d
-                        .map(function (x) {
-                            return {
-                                url: x.url || x.link || x,
-                                type: (x.type || "").toLowerCase()
-                            };
-                        })
-                        .filter(function (x) {
-                            return x.url && String(x.url).indexOf("http") === 0;
-                        });
-                } else if (d && (d.url || d.video || d.image)) {
-                    mediaList = [
-                        {
-                            url: d.url || d.video || d.image,
-                            type: d.video ? "video" : "image"
-                        }
-                    ];
-                }
-            } catch (e) {
-                console.log("IG API fail:", e.message);
-            }
+                let buffer = Buffer.from(bin.data);
+                if (buffer.length < 1000) continue;
 
-            // yt-dlp fallback
-            if (!mediaList.length && typeof runYtDlp === "function") {
-                try {
-                    const filePath = await runYtDlp(url);
-                    if (filePath) {
-                        const fs = require("fs");
-                        const buf = fs.readFileSync(filePath);
-                        const isImg = /\.(jpg|jpeg|png|webp)$/i.test(filePath);
+                const isJpg =
+                    buffer[0] === 0xff && buffer[1] === 0xd8;
+                const isPng =
+                    buffer[0] === 0x89 && buffer[1] === 0x50;
 
-                        if (isImg) {
-                            await sock.sendMessage(
-                                from,
-                                {
-                                    image: buf,
-                                    caption: "📸 Instagram\n⚡ VENOM X"
-                                },
-                                { quoted: message }
-                            );
-                        } else {
-                            await sock.sendMessage(
-                                from,
-                                {
-                                    video: buf,
-                                    caption: "📸 Instagram\n⚡ VENOM X"
-                                },
-                                { quoted: message }
-                            );
-                        }
-
-                        try { fs.unlinkSync(filePath); } catch (e) {}
-                        await sock.sendMessage(from, {
-                            react: { text: "✅", key: message.key }
-                        }).catch(function () {});
-                        return;
-                    }
-                } catch (e) {
-                    console.log("IG ytdlp fail:", e.message);
-                }
-            }
-
-            if (!mediaList.length) {
-                return reply("❌ Could not fetch this Instagram post. Private/restricted posts often fail.");
-            }
-
-            for (let i = 0; i < mediaList.length; i++) {
-                const item = mediaList[i];
-                const u = item.url;
-                const type = item.type || "";
-
-                if (type.indexOf("video") !== -1 || /\.mp4(\?|$)/i.test(u)) {
+                if (isJpg || isPng) {
                     await sock.sendMessage(
                         from,
                         {
-                            video: { url: u },
-                            caption: i === 0 ? "📸 Instagram\n⚡ VENOM X" : undefined
+                            image: buffer,
+                            caption: "📸 *Instagram*\n⚡ VENOM X"
                         },
                         { quoted: message }
                     );
                 } else {
+                    buffer = await remuxMp4(buffer);
                     await sock.sendMessage(
                         from,
                         {
-                            image: { url: u },
-                            caption: i === 0 ? "📸 Instagram\n⚡ VENOM X" : undefined
+                            video: buffer,
+                            mimetype: "video/mp4",
+                            caption: "📸 *Instagram*\n⚡ VENOM X",
+                            fileName: "venom-ig.mp4"
                         },
                         { quoted: message }
                     );
                 }
             }
-
-            await sock.sendMessage(from, {
-                react: { text: "✅", key: message.key }
-            }).catch(function () {});
-        } catch (err) {
-            console.log("INSTAGRAM ERROR:", err.message);
-            await sock.sendMessage(from, {
-                react: { text: "❌", key: message.key }
-            }).catch(function () {});
-            return reply("❌ Instagram download failed.\nPrivate posts or expired links often break.");
+        } catch (e) {
+            console.log("IG ERROR:", e.message || e);
+            return reply(
+"╭━━〔 ❌ IG FAILED 〕━━⬣\n" +
+"┃ " + String(e.message || e).slice(0, 200) + "\n" +
+"┃ Private / restricted posts may fail.\n" +
+"╰━━━━━━━━━━━━━━━━⬣"
+            );
         }
     }
 };

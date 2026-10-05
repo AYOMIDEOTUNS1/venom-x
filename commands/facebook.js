@@ -1,173 +1,182 @@
+/**
+ * VENOM X - Facebook download
+ * #fb <url> | #facebook <url>
+ */
+
 const axios = require("axios");
-const { runYtDlp } = require("../lib/ytdlp");
+const fs = require("fs");
+const path = require("path");
+const os = require("os");
+const crypto = require("crypto");
+const { exec } = require("child_process");
+const { promisify } = require("util");
+const execAsync = promisify(exec);
+
+function tmp(ext) {
+    return path.join(
+        os.tmpdir(),
+        "venom_fb_" + crypto.randomBytes(6).toString("hex") + "." + ext
+    );
+}
 
 function pickUrl(text) {
     const m = String(text || "").match(/(https?:\/\/[^\s]+)/i);
     return m ? m[0] : "";
 }
 
-function cleanUrl(url) {
-    url = String(url || "").trim();
-    if (url.includes(" ")) url = url.split(/\s+/)[0];
-    return url;
+async function remuxMp4(inputBuf) {
+    const inn = tmp("bin");
+    const out = tmp("mp4");
+    fs.writeFileSync(inn, inputBuf);
+    try {
+        await execAsync(
+            'ffmpeg -hide_banner -loglevel error -y -i "' +
+                inn +
+                '" -c copy -movflags +faststart "' +
+                out +
+                '"'
+        );
+        const buf = fs.readFileSync(out);
+        if (buf.length > 1000) return buf;
+    } catch (e) {
+        try {
+            await execAsync(
+                'ffmpeg -hide_banner -loglevel error -y -i "' +
+                    inn +
+                    '" -c:v libx264 -c:a aac -movflags +faststart "' +
+                    out +
+                    '"'
+            );
+            const buf = fs.readFileSync(out);
+            if (buf.length > 1000) return buf;
+        } catch (e2) {}
+    } finally {
+        try { fs.unlinkSync(inn); } catch (e) {}
+        try { fs.unlinkSync(out); } catch (e) {}
+    }
+    return inputBuf;
 }
 
-function isFacebook(url) {
-    url = String(url || "").toLowerCase();
-    return (
-        url.includes("facebook.com") ||
-        url.includes("fb.watch") ||
-        url.includes("fb.com") ||
-        url.includes("m.facebook.com")
-    );
+async function fetchApis(url) {
+    const list = [
+        "https://api.siputzx.my.id/api/d/facebook?url=" + encodeURIComponent(url),
+        "https://api.agatz.xyz/api/facebook?url=" + encodeURIComponent(url)
+    ];
+    let last = null;
+    for (let i = 0; i < list.length; i++) {
+        try {
+            const { data } = await axios.get(list[i], {
+                timeout: 45000,
+                headers: { "User-Agent": "VENOM-X" }
+            });
+            if (data) return data;
+        } catch (e) {
+            last = e;
+        }
+    }
+    throw last || new Error("All FB APIs failed");
 }
 
-async function getFromYtDlp(url) {
-    // returns best effort video url / file path depending on your lib
-    const out = await runYtDlp(url, ["-f", "bv*+ba/b", "--no-playlist"]);
-    return out;
+function pickMedia(data) {
+    const d = data.data || data.result || data;
+    const candidates = [];
+
+    if (typeof d === "string" && d.startsWith("http")) candidates.push(d);
+    if (d.video) candidates.push(d.video);
+    if (d.hd) candidates.push(d.hd);
+    if (d.sd) candidates.push(d.sd);
+    if (d.url) candidates.push(d.url);
+    if (d.download) candidates.push(d.download);
+    if (d.media) candidates.push(d.media);
+    if (Array.isArray(d.medias)) {
+        for (let i = 0; i < d.medias.length; i++) {
+            const m = d.medias[i];
+            if (m && m.url) candidates.push(m.url);
+            if (typeof m === "string") candidates.push(m);
+        }
+    }
+    if (Array.isArray(d)) {
+        for (let i = 0; i < d.length; i++) {
+            if (typeof d[i] === "string") candidates.push(d[i]);
+            if (d[i] && d[i].url) candidates.push(d[i].url);
+        }
+    }
+
+    return candidates.filter(Boolean)[0] || null;
 }
 
 module.exports = {
     name: "facebook",
-    aliases: ["fb", "fbdl", "fbvideo"],
+    aliases: ["fb", "fbdl"],
 
     run: async function ({ sock, from, args, reply, message }) {
-        let url = args.join(" ").trim();
-
+        let url = pickUrl((args || []).join(" "));
         if (!url) {
             const ctx =
-                (message.message &&
-                    message.message.extendedTextMessage &&
-                    message.message.extendedTextMessage.contextInfo) ||
-                {};
-            const quoted = ctx.quotedMessage;
-            if (quoted) {
-                url =
-                    quoted.conversation ||
-                    (quoted.extendedTextMessage && quoted.extendedTextMessage.text) ||
-                    (quoted.imageMessage && quoted.imageMessage.caption) ||
-                    (quoted.videoMessage && quoted.videoMessage.caption) ||
-                    "";
+                message.message &&
+                message.message.extendedTextMessage &&
+                message.message.extendedTextMessage.contextInfo;
+            const q = ctx && ctx.quotedMessage;
+            if (q) {
+                url = pickUrl(
+                    q.conversation ||
+                        (q.extendedTextMessage && q.extendedTextMessage.text) ||
+                        ""
+                );
             }
         }
 
-        url = cleanUrl(pickUrl(url) || url);
-
-        if (!url) {
+        if (!url || !/facebook\.com|fb\.watch|fb\.com/i.test(url)) {
             return reply(
-`╭━━〔 📘 VENOM X FACEBOOK 〕━━⬣
-┃
-┃ Usage:
-┃ #fb <Facebook video link>
-┃
-┃ Or reply to a Facebook link:
-┃ #fb
-┃
-╰━━━━━━━━━━━━━━━━⬣`
+"╭━━〔 📘 VENOM FB 〕━━⬣\n" +
+"┃ Usage:\n" +
+"┃ #fb <facebook video url>\n" +
+"╰━━━━━━━━━━━━━━━━⬣"
             );
         }
-
-        if (!isFacebook(url)) {
-            return reply("❌ Invalid Facebook link.");
-        }
-
-        try {
-            await sock.sendMessage(from, {
-                react: { text: "⏳", key: message.key }
-            }).catch(function () {});
-        } catch (e) {}
 
         try {
             await reply("📥 Downloading Facebook video...");
 
-            // --- API attempt (simple public style) ---
-            let videoUrl = null;
-            let title = "Facebook Video";
+            const data = await fetchApis(url);
+            const mediaUrl = pickMedia(data);
+            if (!mediaUrl) throw new Error("No video URL in API response");
 
-            try {
-                const { data } = await axios.get(
-                    "https://api.siputzx.my.id/api/d/fb",
-                    {
-                        params: { url: url },
-                        timeout: 45000,
-                        headers: { "User-Agent": "VENOM-X" }
-                    }
-                );
-
-                const d = data && (data.data || data.result || data);
-                if (Array.isArray(d)) {
-                    videoUrl = d[0] && (d[0].url || d[0].link);
-                } else if (d) {
-                    videoUrl =
-                        d.url ||
-                        d.video ||
-                        d.hd ||
-                        d.sd ||
-                        (d.urls && d.urls[0] && (d.urls[0].url || d.urls[0]));
-                    title = d.title || title;
+            const bin = await axios.get(mediaUrl, {
+                responseType: "arraybuffer",
+                timeout: 120000,
+                maxContentLength: 80 * 1024 * 1024,
+                headers: {
+                    "User-Agent":
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0",
+                    Referer: "https://www.facebook.com/",
+                    Accept: "*/*"
                 }
-            } catch (e) {
-                console.log("FB API fail:", e.message);
-            }
+            });
 
-            // --- yt-dlp fallback ---
-            if (!videoUrl && typeof runYtDlp === "function") {
-                try {
-                    const filePath = await runYtDlp(url);
-                    if (filePath) {
-                        const fs = require("fs");
-                        const buf = fs.readFileSync(filePath);
-                        await sock.sendMessage(
-                            from,
-                            {
-                                video: buf,
-                                caption:
-"╭━━〔 📘 VENOM X FACEBOOK 〕━━⬣\n" +
-"┃ ✅ Downloaded\n" +
-"┃ 📡 yt-dlp\n" +
-"╰━━━━━━━━━━━━━━━━⬣"
-                            },
-                            { quoted: message }
-                        );
-                        try { fs.unlinkSync(filePath); } catch (e) {}
+            let buffer = Buffer.from(bin.data);
+            if (buffer.length < 5000) throw new Error("File too small / empty");
 
-                        await sock.sendMessage(from, {
-                            react: { text: "✅", key: message.key }
-                        }).catch(function () {});
-                        return;
-                    }
-                } catch (e) {
-                    console.log("FB ytdlp fail:", e.message);
-                }
-            }
-
-            if (!videoUrl) {
-                return reply("❌ Could not fetch this Facebook video. Try another link.");
-            }
+            buffer = await remuxMp4(buffer);
 
             await sock.sendMessage(
                 from,
                 {
-                    video: { url: videoUrl },
-                    caption:
-"╭━━〔 📘 VENOM X FACEBOOK 〕━━⬣\n" +
-"┃ 🎬 " + title + "\n" +
-"┃ ✅ Downloaded\n" +
-"╰━━━━━━━━━━━━━━━━⬣"
+                    video: buffer,
+                    mimetype: "video/mp4",
+                    caption: "📘 *Facebook*\n⚡ VENOM X",
+                    fileName: "venom-fb.mp4"
                 },
                 { quoted: message }
             );
-
-            await sock.sendMessage(from, {
-                react: { text: "✅", key: message.key }
-            }).catch(function () {});
-        } catch (err) {
-            console.log("FACEBOOK ERROR:", err.message);
-            await sock.sendMessage(from, {
-                react: { text: "❌", key: message.key }
-            }).catch(function () {});
-            return reply("❌ Facebook download failed.\nTry another link.");
+        } catch (e) {
+            console.log("FB ERROR:", e.message || e);
+            return reply(
+"╭━━〔 ❌ FB FAILED 〕━━⬣\n" +
+"┃ " + String(e.message || e).slice(0, 200) + "\n" +
+"┃ Try another link / public video.\n" +
+"╰━━━━━━━━━━━━━━━━⬣"
+            );
         }
     }
 };

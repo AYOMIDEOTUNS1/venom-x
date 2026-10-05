@@ -16,9 +16,6 @@ module.exports = function (sock) {
         global.processedMessages = new Set();
     }
 
-    // -------------------------------------------------
-    // LOAD COMMANDS
-    // -------------------------------------------------
     function loadCommands() {
         commands.clear();
 
@@ -63,32 +60,23 @@ module.exports = function (sock) {
 
     loadCommands();
 
-    // -------------------------------------------------
-    // HELPERS
-    // -------------------------------------------------
     function extractBody(msg) {
         try {
             const m = msg.message || {};
 
             if (m.conversation) return m.conversation;
-
             if (m.extendedTextMessage && m.extendedTextMessage.text) {
                 return m.extendedTextMessage.text;
             }
-
             if (m.imageMessage && m.imageMessage.caption) {
                 return m.imageMessage.caption;
             }
-
             if (m.videoMessage && m.videoMessage.caption) {
                 return m.videoMessage.caption;
             }
-
             if (m.documentMessage && m.documentMessage.caption) {
                 return m.documentMessage.caption;
             }
-
-            // buttons
             if (m.buttonsResponseMessage) {
                 return (
                     m.buttonsResponseMessage.selectedDisplayText ||
@@ -96,8 +84,6 @@ module.exports = function (sock) {
                     ""
                 );
             }
-
-            // list
             if (m.listResponseMessage) {
                 const s = m.listResponseMessage.singleSelectReply;
                 return (
@@ -106,8 +92,6 @@ module.exports = function (sock) {
                     ""
                 );
             }
-
-            // template button
             if (m.templateButtonReplyMessage) {
                 return (
                     m.templateButtonReplyMessage.selectedId ||
@@ -115,8 +99,6 @@ module.exports = function (sock) {
                     ""
                 );
             }
-
-            // interactive / native flow
             if (
                 m.interactiveResponseMessage &&
                 m.interactiveResponseMessage.nativeFlowResponseMessage
@@ -132,7 +114,6 @@ module.exports = function (sock) {
                     }
                 } catch (e) {}
             }
-
             return "";
         } catch (e) {
             return "";
@@ -157,16 +138,14 @@ module.exports = function (sock) {
                 list.push(normalizeId(settings.owner));
             }
         }
-        if (settings.ownerNumber) {
-            list.push(normalizeId(settings.ownerNumber));
-        }
+        if (settings.ownerNumber) list.push(normalizeId(settings.ownerNumber));
         if (process.env.OWNER_NUMBER) {
             list.push(normalizeId(process.env.OWNER_NUMBER));
         }
         return list.filter(Boolean);
     }
 
-    function isSudoUser(sender, settings) {
+    function isSudoUser(sender) {
         try {
             const sudoPath = path.join(__dirname, "../database/sudo.json");
             if (!fs.existsSync(sudoPath)) return false;
@@ -185,9 +164,6 @@ module.exports = function (sock) {
         return false;
     }
 
-    // -------------------------------------------------
-    // MESSAGE LISTENER
-    // -------------------------------------------------
     sock.ev.on("messages.upsert", async function (chatUpdate) {
         try {
             const messages = chatUpdate.messages || [];
@@ -197,7 +173,6 @@ module.exports = function (sock) {
             if (!msg || !msg.message) return;
             if (msg.key && msg.key.remoteJid === "status@broadcast") return;
 
-            // dedupe
             const mid = msg.key && msg.key.id ? msg.key.id : null;
             if (mid) {
                 if (global.processedMessages.has(mid)) return;
@@ -214,7 +189,6 @@ module.exports = function (sock) {
                 ? msg.key.participant || msg.participant || from
                 : from;
 
-            // LID / PN helpers
             const senderPn =
                 (msg.key && msg.key.participantPn) ||
                 (msg.key && msg.key.remoteJidAlt) ||
@@ -225,11 +199,7 @@ module.exports = function (sock) {
             const settings = getSettings() || {};
             const prefix = settings.prefix || "#";
 
-            // owner / sudo
             const owners = getOwnerList(settings);
-            const botId = normalizeId(
-                sock.user && (sock.user.id || sock.user.jid)
-            );
             const senderNorm = normalizeId(sender);
             const senderPnNorm = normalizeId(senderPn);
 
@@ -243,10 +213,11 @@ module.exports = function (sock) {
                 }) ||
                 (msg.key && msg.key.fromMe === true);
 
-            const isSudo = isSudoUser(sender, settings) || isSudoUser(senderPn, settings);
+            const isSudo =
+                isSudoUser(sender) || isSudoUser(senderPn);
             const isPrivileged = isOwner || isSudo;
 
-            // ---------- STICKER COLLECTOR (#takeall) ----------
+            // sticker collector for #takeall
             if (isGroup && !(msg.key && msg.key.fromMe)) {
                 setImmediate(function () {
                     (async function () {
@@ -263,10 +234,6 @@ module.exports = function (sock) {
                                 (raw.viewOnceMessageV2 &&
                                     raw.viewOnceMessageV2.message &&
                                     raw.viewOnceMessageV2.message.stickerMessage) ||
-                                (raw.viewOnceMessageV2Extension &&
-                                    raw.viewOnceMessageV2Extension.message &&
-                                    raw.viewOnceMessageV2Extension.message
-                                        .stickerMessage) ||
                                 null;
 
                             if (!stickerMsg) return;
@@ -286,22 +253,17 @@ module.exports = function (sock) {
                             if (buffer.length) {
                                 stickerCollector.addSticker(from, buffer);
                             }
-                        } catch (e) {
-                            // ignore
-                        }
+                        } catch (e) {}
                     })();
                 });
             }
 
-            // body / command
             let body = extractBody(msg);
             body = String(body || "").trim();
             if (!body) return;
 
-            // sleep mode
             if (settings.sleep === true && !isPrivileged) return;
 
-            // private mode
             if (
                 String(settings.mode || "public").toLowerCase() === "private" &&
                 !isPrivileged
@@ -309,7 +271,6 @@ module.exports = function (sock) {
                 return;
             }
 
-            // global ban
             try {
                 const banlist = require("../lib/banlist");
                 if (!isPrivileged && typeof banlist.isBanned === "function") {
@@ -319,7 +280,6 @@ module.exports = function (sock) {
                 }
             } catch (e) {}
 
-            // must start with prefix
             if (!body.startsWith(prefix)) return;
 
             const withoutPrefix = body.slice(prefix.length).trim();
@@ -332,7 +292,6 @@ module.exports = function (sock) {
             const command = commands.get(commandName);
             if (!command || typeof command.run !== "function") return;
 
-            // reply helper
             const reply = async function (text) {
                 return sock.sendMessage(
                     from,
@@ -341,17 +300,15 @@ module.exports = function (sock) {
                 );
             };
 
-            // optional react
-            try {
-                const reactMap = settings.react || {};
-                const reactEmoji =
-                    (reactMap && reactMap[commandName]) ||
-                    settings.commandReact ||
-                    "⚡";
-                await sock.sendMessage(from, {
-                    react: { text: reactEmoji, key: msg.key }
-                });
-            } catch (e) {}
+            async function setReact(emoji) {
+                try {
+                    await sock.sendMessage(from, {
+                        react: { text: emoji, key: msg.key }
+                    });
+                } catch (e) {}
+            }
+
+            await setReact("⏳");
 
             console.log("🚀 RUNNING COMMAND:", commandName);
             const start = Date.now();
@@ -375,6 +332,7 @@ module.exports = function (sock) {
                     reply: reply
                 });
 
+                await setReact("✅");
                 console.log(
                     "✅ " +
                         commandName +
@@ -385,12 +343,35 @@ module.exports = function (sock) {
             } catch (err) {
                 console.log(
                     "❌ Command Error [" + commandName + "]:",
-                    err.message
+                    err && err.message ? err.message : err
                 );
+
+                await setReact("❌");
+
+                const errText = String(
+                    (err && err.message) || err || "Unknown error"
+                ).slice(0, 280);
+
                 await sock
                     .sendMessage(
                         from,
-                        { text: "❌ Error: " + err.message },
+                        {
+                            text:
+"╭━━〔 ❌ VENOM ERROR 〕━━⬣\n" +
+"┃\n" +
+"┃ Command: *" +
+prefix +
+commandName +
+"*\n" +
+"┃\n" +
+"┃ " +
+errText +
+"\n" +
+"┃\n" +
+"┃ Try again or use another cmd.\n" +
+"┃\n" +
+"╰━━━━━━━━━━━━━━━━⬣"
+                        },
                         { quoted: msg }
                     )
                     .catch(function () {});
