@@ -1,168 +1,74 @@
-const fs = require("fs");
-const path = require("path");
-const os = require("os");
-const crypto = require("crypto");
-const { exec } = require("child_process");
-const { promisify } = require("util");
-const webp = require("node-webpmux");
-const stickerCollector = require("../lib/stickerCollector");
+/**
+ * Pack every sticker sent in this group into one sticker pack.
+ * Stickers must be sent AFTER the bot restarted (collector is in memory).
+ * #takeall
+ * #takeall My Pack
+ */
 
-const execAsync = promisify(exec);
-
-const PACK_NAME = "VENOM X";
-const AUTHOR_NAME = "⸸𝕍ΞȠØ𝕄⸸";
-
-function tmpDir() {
-    return path.join(os.tmpdir(), `venom_pack_${crypto.randomBytes(6).toString("hex")}`);
-}
-
-async function addExif(webpBuffer) {
-    const img = new webp.Image();
-
-    const json = {
-        "sticker-pack-id": crypto.randomBytes(16).toString("hex"),
-        "sticker-pack-name": PACK_NAME,
-        "sticker-pack-publisher": AUTHOR_NAME,
-        "emojis": ["🔥"]
-    };
-
-    const exifAttr = Buffer.from([
-        0x49, 0x49, 0x2A, 0x00,
-        0x08, 0x00, 0x00, 0x00,
-        0x01, 0x00,
-        0x41, 0x57,
-        0x07, 0x00,
-        0x00, 0x00,
-        0x00, 0x00,
-        0x16, 0x00,
-        0x00, 0x00
-    ]);
-
-    const jsonBuffer = Buffer.from(JSON.stringify(json), "utf8");
-    const exif = Buffer.concat([exifAttr, jsonBuffer]);
-    exif.writeUIntLE(jsonBuffer.length, 14, 4);
-
-    await img.load(webpBuffer);
-    img.exif = exif;
-    return await img.save(null);
-}
-
-function cleanup(dir) {
-    try {
-        if (fs.existsSync(dir)) {
-            for (const file of fs.readdirSync(dir)) {
-                fs.unlinkSync(path.join(dir, file));
-            }
-            fs.rmdirSync(dir);
-        }
-    } catch {}
-}
+const { Sticker } = require("wa-sticker-formatter");
+const collector = require("../lib/stickerCollector");
 
 module.exports = {
     name: "takeall",
-    aliases: ["stealall", "packall"],
+    aliases: ["stealall", "packall", "stickerdump"],
 
-    run: async ({ sock, from, reply }) => {
-        const stickers = stickerCollector.getStickers(from);
+    run: async function ({ sock, from, args, reply, message, isGroup }) {
+        if (!isGroup) return reply("❌ Group only.");
 
+        const stickers = collector.getStickers(from);
         if (!stickers.length) {
             return reply(
-`╭━━〔 🖼️ VENOM X TAKEALL 〕━━⬣
-
-No stickers collected yet in this chat.
-
-Send stickers first, then use:
-#takeall
-
-Max: 30 stickers
-
-╰━━━━━━━━━━━━━━━━⬣`
+"╭━━〔 📦 TAKEALL 〕━━⬣\n" +
+"┃\n" +
+"┃ No stickers collected in this group yet.\n" +
+"┃\n" +
+"┃ Send stickers in the group, then:\n" +
+"┃ #takeall\n" +
+"┃ #takeall Pack Name\n" +
+"┃\n" +
+"┃ Only stickers sent after the bot\n" +
+"┃ started are saved (max 30).\n" +
+"┃\n" +
+"╰━━━━━━━━━━━━━━━━⬣"
             );
         }
 
-        if (stickers.length < 3) {
-            return reply(
-`╭━━〔 🖼️ VENOM X TAKEALL 〕━━⬣
+        const pack = (args && args.join(" ").trim()) || "VENOM X";
+        const author = "VENOM X";
 
-Need at least 3 stickers to make a pack.
+        await reply("📦 Packing " + stickers.length + " sticker(s) as *" + pack + "*...");
 
-Collected now: ${stickers.length}/30
-
-╰━━━━━━━━━━━━━━━━⬣`
-            );
-        }
-
-        await reply(`📦 Creating VENOM sticker pack (${stickers.length} stickers)...`);
-
-        const dir = tmpDir();
-        const zipPath = path.join(os.tmpdir(), `VENOM_X_Pack_${Date.now()}.zip`);
-
-        try {
-            fs.mkdirSync(dir, { recursive: true });
-
-            // Brand each sticker and save
-            let index = 1;
-            for (const buffer of stickers) {
+        let sent = 0;
+        for (let i = 0; i < stickers.length; i++) {
+            try {
+                const sticker = new Sticker(stickers[i], {
+                    pack: pack,
+                    author: author,
+                    type: "full",
+                    quality: 70
+                });
+                const buffer = await sticker.toBuffer();
+                await sock.sendMessage(from, { sticker: buffer }, { quoted: message });
+                sent++;
+                await new Promise(function (r) { setTimeout(r, 500); });
+            } catch (e) {
+                // fallback: send raw webp
                 try {
-                    const branded = await addExif(buffer);
-                    const fileName = `sticker_${String(index).padStart(2, "0")}.webp`;
-                    fs.writeFileSync(path.join(dir, fileName), branded);
-                    index++;
-                } catch (err) {
-                    console.log("TAKEALL brand error:", err.message);
-                }
+                    await sock.sendMessage(from, { sticker: stickers[i] }, { quoted: message });
+                    sent++;
+                } catch (e2) {}
             }
-
-            const packed = index - 1;
-            if (packed < 3) {
-                cleanup(dir);
-                return reply("❌ Not enough valid stickers to create a pack.");
-            }
-
-            // Pack metadata
-            fs.writeFileSync(path.join(dir, "title.txt"), PACK_NAME);
-            fs.writeFileSync(path.join(dir, "author.txt"), AUTHOR_NAME);
-
-            // Create ZIP (FIXED)
-            await execAsync(`cd "\( {dir}" && zip -r " \){zipPath}" .`);
-
-            if (!fs.existsSync(zipPath)) {
-                throw new Error("Failed to create ZIP file");
-            }
-
-            const zipBuffer = fs.readFileSync(zipPath);
-
-            await sock.sendMessage(from, {
-                document: zipBuffer,
-                mimetype: "application/zip",
-                fileName: `VENOM_X_StickerPack_${packed}.zip`,
-                caption:
-`╭━━〔 📦 VENOM X STICKER PACK 〕━━⬣
-
-✅ Pack created successfully
-📊 Stickers: ${packed}
-🏷️ Name: ${PACK_NAME}
-✍️ Author: ${AUTHOR_NAME}
-
-📥 How to use:
-1. Download this ZIP
-2. Open with Sticker Maker / WAStickerApps
-3. Add to WhatsApp
-
-╰━━━━━━━━━━━━━━━━⬣`
-            });
-
-            // Clear collection so it won't repeat the same stickers
-            stickerCollector.clearStickers(from);
-
-            return reply(`✅ Pack sent (${packed} stickers).`);
-
-        } catch (err) {
-            console.log("TAKEALL PACK ERROR:", err);
-            return reply(`❌ Failed to create pack:\n${err.message}`);
-        } finally {
-            cleanup(dir);
-            try { fs.unlinkSync(zipPath); } catch {}
         }
+
+        return reply(
+"╭━━〔 📦 TAKEALL 〕━━⬣\n" +
+"┃ Pack: " + pack + "\n" +
+"┃ Author: " + author + "\n" +
+"┃ Sent: " + sent + "/" + stickers.length + "\n" +
+"┃\n" +
+"┃ Save them in WhatsApp to keep\n" +
+"┃ them as one pack.\n" +
+"╰━━━━━━━━━━━━━━━━⬣"
+        );
     }
 };

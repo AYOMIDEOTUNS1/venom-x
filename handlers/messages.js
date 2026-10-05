@@ -16,6 +16,9 @@ module.exports = function (sock) {
         global.processedMessages = new Set();
     }
 
+    // -------------------------------------------------
+    // LOAD COMMANDS
+    // -------------------------------------------------
     function loadCommands() {
         commands.clear();
 
@@ -46,277 +49,205 @@ module.exports = function (sock) {
 
                 if (Array.isArray(command.aliases)) {
                     for (let a = 0; a < command.aliases.length; a++) {
-                        const alias = command.aliases[a];
-                        if (typeof alias === "string" && alias.trim()) {
-                            commands.set(alias.toLowerCase().trim(), command);
-                        }
+                        const alias = String(command.aliases[a] || "").toLowerCase();
+                        if (alias) commands.set(alias, command);
                     }
                 }
             } catch (err) {
-                console.log("COMMAND LOAD ERROR: " + file + " " + err.message);
+                console.log("⚠️ Failed to load " + file + ":", err.message);
             }
         }
 
-        console.log("✅ Loaded " + commands.size + " commands");
+        console.log("📦 Loaded " + commands.size + " command keys");
     }
 
     loadCommands();
 
-    const reactions = {
-        menu: "🤖",
-        help: "📚",
-        ping: "⚡",
-        alive: "💚",
-        up: "⚡",
-        owner: "👑",
-        ai: "🧠",
-        sticker: "🖼️",
-        kick: "🥾",
-        tagall: "📢",
-        antilink: "🛡️",
-        play: "🎵",
-        sleep: "😴",
-        refresh: "🔄",
-        welcome: "👋",
-        goodbye: "👋",
-        hd: "✨",
-        private: "🔒",
-        public: "🌍",
-        wordchain: "🔤",
-        wc: "🔤",
-        sudo: "👑",
-        bird: "🐤",
-        flap: "🐤",
-        snake: "🐍",
-        ttt: "🎮",
-        ban: "🚫",
-        unban: "✅",
-        invite: "🔗",
-        grouplink: "🔗",
-        blur: "🌫️",
-        github: "🐙",
-        grouppfp: "🖼️",
-        tomp3: "🎧",
-        setfullpfp: "🖼️",
-        url: "🔗",
-        tovid: "🎬",
-        default: "⚙️"
-    };
+    // -------------------------------------------------
+    // HELPERS
+    // -------------------------------------------------
+    function extractBody(msg) {
+        try {
+            const m = msg.message || {};
 
-    function normalizeId(value) {
-        return String(value || "").replace(/[^0-9]/g, "");
+            if (m.conversation) return m.conversation;
+
+            if (m.extendedTextMessage && m.extendedTextMessage.text) {
+                return m.extendedTextMessage.text;
+            }
+
+            if (m.imageMessage && m.imageMessage.caption) {
+                return m.imageMessage.caption;
+            }
+
+            if (m.videoMessage && m.videoMessage.caption) {
+                return m.videoMessage.caption;
+            }
+
+            if (m.documentMessage && m.documentMessage.caption) {
+                return m.documentMessage.caption;
+            }
+
+            // buttons
+            if (m.buttonsResponseMessage) {
+                return (
+                    m.buttonsResponseMessage.selectedDisplayText ||
+                    m.buttonsResponseMessage.selectedButtonId ||
+                    ""
+                );
+            }
+
+            // list
+            if (m.listResponseMessage) {
+                const s = m.listResponseMessage.singleSelectReply;
+                return (
+                    (s && s.selectedRowId) ||
+                    m.listResponseMessage.title ||
+                    ""
+                );
+            }
+
+            // template button
+            if (m.templateButtonReplyMessage) {
+                return (
+                    m.templateButtonReplyMessage.selectedId ||
+                    m.templateButtonReplyMessage.selectedDisplayText ||
+                    ""
+                );
+            }
+
+            // interactive / native flow
+            if (
+                m.interactiveResponseMessage &&
+                m.interactiveResponseMessage.nativeFlowResponseMessage
+            ) {
+                try {
+                    const params =
+                        m.interactiveResponseMessage.nativeFlowResponseMessage
+                            .paramsJson;
+                    if (params) {
+                        const parsed = JSON.parse(params);
+                        if (parsed.id) return String(parsed.id);
+                        if (parsed.selectedId) return String(parsed.selectedId);
+                    }
+                } catch (e) {}
+            }
+
+            return "";
+        } catch (e) {
+            return "";
+        }
     }
 
-    function checkSudo(id) {
+    function normalizeId(id) {
+        if (!id) return "";
+        let v = String(id);
+        if (v.includes(":")) v = v.split(":")[0];
+        return v;
+    }
+
+    function getOwnerList(settings) {
+        const list = [];
+        if (settings.owner) {
+            if (Array.isArray(settings.owner)) {
+                for (let i = 0; i < settings.owner.length; i++) {
+                    list.push(normalizeId(settings.owner[i]));
+                }
+            } else {
+                list.push(normalizeId(settings.owner));
+            }
+        }
+        if (settings.ownerNumber) {
+            list.push(normalizeId(settings.ownerNumber));
+        }
+        if (process.env.OWNER_NUMBER) {
+            list.push(normalizeId(process.env.OWNER_NUMBER));
+        }
+        return list.filter(Boolean);
+    }
+
+    function isSudoUser(sender, settings) {
         try {
-            const sudo = require("../commands/sudo");
-            if (sudo && typeof sudo.isSudoNumber === "function") {
-                return sudo.isSudoNumber(id);
+            const sudoPath = path.join(__dirname, "../database/sudo.json");
+            if (!fs.existsSync(sudoPath)) return false;
+            const raw = fs.readFileSync(sudoPath, "utf8");
+            const data = JSON.parse(raw || "[]");
+            const id = normalizeId(sender);
+            if (Array.isArray(data)) {
+                return data.some(function (x) {
+                    return normalizeId(x) === id || String(x).includes(id);
+                });
+            }
+            if (data && typeof data === "object") {
+                return !!(data[id] || data[sender]);
             }
         } catch (e) {}
         return false;
     }
 
-    function isOwnerSender(msg, settings, sender, senderPn, participantPn) {
-        if (msg && msg.key && msg.key.fromMe) return true;
-
-        const ownerNumber = normalizeId(settings.ownerNumber);
-        const ownerLid = normalizeId(settings.ownerLid);
-
-        const candidates = [
-            normalizeId(sender),
-            normalizeId(senderPn),
-            normalizeId(participantPn),
-            normalizeId(msg && msg.key ? msg.key.participant : ""),
-            normalizeId(msg && msg.key ? msg.key.remoteJid : "")
-        ];
-
-        for (let i = 0; i < candidates.length; i++) {
-            const id = candidates[i];
-            if (!id) continue;
-            if (ownerNumber && id === ownerNumber) return true;
-            if (ownerLid && id === ownerLid) return true;
-        }
-
-        return false;
-    }
-
-    function isSudoSender(msg, sender, senderPn, participantPn) {
-        if (msg && msg.key && msg.key.fromMe) return false;
-
-        const candidates = [
-            normalizeId(sender),
-            normalizeId(senderPn),
-            normalizeId(participantPn),
-            normalizeId(msg && msg.key ? msg.key.participant : ""),
-            normalizeId(msg && msg.key ? msg.key.remoteJid : "")
-        ];
-
-        for (let i = 0; i < candidates.length; i++) {
-            if (candidates[i] && checkSudo(candidates[i])) return true;
-        }
-        return false;
-    }
-
-    function extractBody(msg) {
-        let content = msg.message;
-        if (!content) return "";
-
-        if (content.ephemeralMessage && content.ephemeralMessage.message) {
-            content = content.ephemeralMessage.message;
-        }
-        if (content.viewOnceMessage && content.viewOnceMessage.message) {
-            content = content.viewOnceMessage.message;
-        }
-        if (content.viewOnceMessageV2 && content.viewOnceMessageV2.message) {
-            content = content.viewOnceMessageV2.message;
-        }
-
-        var buttonId =
-            (content.buttonsResponseMessage &&
-                content.buttonsResponseMessage.selectedButtonId) ||
-            (content.templateButtonReplyMessage &&
-                content.templateButtonReplyMessage.selectedId) ||
-            (content.listResponseMessage &&
-                content.listResponseMessage.singleSelectReply &&
-                content.listResponseMessage.singleSelectReply.selectedRowId) ||
-            "";
-
-        // New WhatsApp interactive button taps
-        if (
-            content.interactiveResponseMessage &&
-            content.interactiveResponseMessage.nativeFlowResponseMessage &&
-            content.interactiveResponseMessage.nativeFlowResponseMessage.paramsJson
-        ) {
-            try {
-                var parsed = JSON.parse(
-                    content.interactiveResponseMessage.nativeFlowResponseMessage.paramsJson
-                );
-                buttonId = parsed.id || parsed.selectedId || buttonId;
-            } catch (e) {}
-        }
-
-        if (buttonId) return String(buttonId).trim();
-
-        return String(
-            content.conversation ||
-                (content.extendedTextMessage && content.extendedTextMessage.text) ||
-                (content.imageMessage && content.imageMessage.caption) ||
-                (content.videoMessage && content.videoMessage.caption) ||
-                (content.documentMessage && content.documentMessage.caption) ||
-                ""
-        ).trim();
-    }
-
-    console.log("📡 Registering messages.upsert listener...");
-
-    sock.ev.on("messages.upsert", function (payload) {
+    // -------------------------------------------------
+    // MESSAGE LISTENER
+    // -------------------------------------------------
+    sock.ev.on("messages.upsert", async function (chatUpdate) {
         try {
-            const messages = payload && payload.messages ? payload.messages : null;
-            if (!Array.isArray(messages) || messages.length === 0) return;
+            const messages = chatUpdate.messages || [];
+            if (!messages.length) return;
 
-            for (let i = 0; i < messages.length; i++) {
-                const msg = messages[i];
-                const jid = msg && msg.key ? msg.key.remoteJid : "";
-                if (!jid) continue;
-                if (jid === "status@broadcast") continue;
-                if (String(jid).indexOf("@newsletter") !== -1) continue;
+            const msg = messages[0];
+            if (!msg || !msg.message) return;
+            if (msg.key && msg.key.remoteJid === "status@broadcast") return;
 
-                processMessage(msg).catch(function (err) {
-                    console.log("❌ MESSAGE PROCESS ERROR:", err.message);
-                });
+            // dedupe
+            const mid = msg.key && msg.key.id ? msg.key.id : null;
+            if (mid) {
+                if (global.processedMessages.has(mid)) return;
+                global.processedMessages.add(mid);
+                if (global.processedMessages.size > 1000) {
+                    global.processedMessages.clear();
+                }
             }
-        } catch (err) {
-            console.log("❌ UPSERT HANDLER ERROR:", err.message);
-        }
-    });
-
-    console.log("✅ messages.upsert listener registered");
-
-    async function processMessage(msg) {
-        try {
-            if (!msg || !msg.message || !msg.key) return;
-
-            const messageId = msg.key.id;
-            if (!messageId) return;
-
-            const dedupeKey =
-                String(msg.key.remoteJid) +
-                "|" +
-                String(messageId) +
-                "|" +
-                (msg.key.fromMe ? "1" : "0");
-
-            if (global.processedMessages.has(dedupeKey)) return;
-            global.processedMessages.add(dedupeKey);
-
-            if (global.processedMessages.size > 5000) {
-                global.processedMessages.clear();
-            }
-
-            const settings = getSettings();
-            if (!settings || typeof settings !== "object") return;
 
             const from = msg.key.remoteJid;
-            if (!from) return;
+            const isGroup = from && from.endsWith("@g.us");
 
-            const senderPn = msg.key.senderPn || null;
-            const participantPn = msg.key.participantPn || null;
-            const sender = msg.key.participant || msg.key.remoteJid;
-            const isGroup = String(from).indexOf("@g.us") !== -1;
+            let sender = isGroup
+                ? msg.key.participant || msg.participant || from
+                : from;
 
-            const isOwner = isOwnerSender(
-                msg,
-                settings,
-                sender,
-                senderPn,
-                participantPn
+            // LID / PN helpers
+            const senderPn =
+                (msg.key && msg.key.participantPn) ||
+                (msg.key && msg.key.remoteJidAlt) ||
+                sender;
+            const participantPn =
+                (msg.key && msg.key.participantPn) || senderPn;
+
+            const settings = getSettings() || {};
+            const prefix = settings.prefix || "#";
+
+            // owner / sudo
+            const owners = getOwnerList(settings);
+            const botId = normalizeId(
+                sock.user && (sock.user.id || sock.user.jid)
             );
+            const senderNorm = normalizeId(sender);
+            const senderPnNorm = normalizeId(senderPn);
 
-            const isSudo = isSudoSender(msg, sender, senderPn, participantPn);
+            const isOwner =
+                owners.some(function (o) {
+                    return (
+                        senderNorm.includes(o) ||
+                        senderPnNorm.includes(o) ||
+                        o.includes(senderNorm)
+                    );
+                }) ||
+                (msg.key && msg.key.fromMe === true);
+
+            const isSudo = isSudoUser(sender, settings) || isSudoUser(senderPn, settings);
             const isPrivileged = isOwner || isSudo;
 
-            const allowSelf = settings.allowSelf !== false;
-            if (msg.key.fromMe && !allowSelf && !isOwner) return;
-
-            // Global ban check
-            try {
-                const banlist = require("../lib/banlist");
-                if (!isPrivileged && banlist.isBanned(sender)) return;
-            } catch (e) {}
-
-            // Autoreact (non-blocking)
-            setImmediate(function () {
-                try {
-                    const ar = require("../commands/autoreact");
-                    if (ar.handleAutoReact) {
-                        Promise.resolve(ar.handleAutoReact(sock, msg)).catch(function () {});
-                    }
-                } catch (e) {}
-            });
-
-            // Group protections (non-blocking)
-            if (isGroup) {
-                setImmediate(function () {
-                    try {
-                        const antiLinkHandler = require("./antilink");
-                        Promise.resolve(antiLinkHandler(sock, msg)).catch(function () {});
-                    } catch (e) {}
-
-                    try {
-                        const antiChannel = require("./antichannel");
-                        Promise.resolve(antiChannel(sock, msg)).catch(function () {});
-                    } catch (e) {}
-
-                    try {
-                        const antiStatusTag = require("./antistatustag");
-                        Promise.resolve(antiStatusTag(sock, msg)).catch(function () {});
-                    } catch (e) {}
-                });
-            }
-
-            // Sticker collector (non-blocking)
-            if (!msg.key.fromMe) {
+            // ---------- STICKER COLLECTOR (#takeall) ----------
+            if (isGroup && !(msg.key && msg.key.fromMe)) {
                 setImmediate(function () {
                     (async function () {
                         try {
@@ -331,130 +262,96 @@ module.exports = function (sock) {
                                     raw.viewOnceMessage.message.stickerMessage) ||
                                 (raw.viewOnceMessageV2 &&
                                     raw.viewOnceMessageV2.message &&
-                                    raw.viewOnceMessageV2.message.stickerMessage);
+                                    raw.viewOnceMessageV2.message.stickerMessage) ||
+                                (raw.viewOnceMessageV2Extension &&
+                                    raw.viewOnceMessageV2Extension.message &&
+                                    raw.viewOnceMessageV2Extension.message
+                                        .stickerMessage) ||
+                                null;
 
                             if (!stickerMsg) return;
 
-                            const { downloadContentFromMessage } = require("@whiskeysockets/baileys");
+                            const {
+                                downloadContentFromMessage
+                            } = require("@whiskeysockets/baileys");
                             const stickerCollector = require("../lib/stickerCollector");
 
-                            const stream = await downloadContentFromMessage(stickerMsg, "sticker");
+                            const stream = await downloadContentFromMessage(
+                                stickerMsg,
+                                "sticker"
+                            );
                             const chunks = [];
                             for await (const chunk of stream) chunks.push(chunk);
-                            stickerCollector.addSticker(from, Buffer.concat(chunks));
-                        } catch (e) {}
+                            const buffer = Buffer.concat(chunks);
+                            if (buffer.length) {
+                                stickerCollector.addSticker(from, buffer);
+                            }
+                        } catch (e) {
+                            // ignore
+                        }
                     })();
                 });
             }
 
-            const body = extractBody(msg);
+            // body / command
+            let body = extractBody(msg);
+            body = String(body || "").trim();
             if (!body) return;
 
-            const prefix = settings.prefix || "#";
+            // sleep mode
+            if (settings.sleep === true && !isPrivileged) return;
 
-            // Word Chain (no prefix)
-            if (isGroup && body.indexOf(prefix) !== 0) {
-                try {
-                    const wc = require("../commands/wordchain");
-                    if (typeof wc.handleWordChainMessage === "function") {
-                        const handled = await wc.handleWordChainMessage(
-                            sock,
-                            msg,
-                            from,
-                            sender,
-                            body,
-                            isGroup
-                        );
-                        if (handled) return;
-                    }
-                } catch (e) {
-                    console.log("WORDCHAIN HOOK:", e.message);
-                }
-                return;
-            }
-
-            if (body.indexOf(prefix) !== 0) return;
-
-            const commandText = body.slice(prefix.length).trim();
-            if (!commandText) return;
-
-            const parts = commandText.split(/\s+/);
-            const commandName = (parts.shift() || "").toLowerCase();
-            if (!commandName) return;
-            const args = parts;
-
-            console.log("📩 Message:", body);
-
-            try {
-                const botState = require("../lib/botState");
-                if (botState.isSleeping()) {
-                    const allowed = [
-                        "up",
-                        "wake",
-                        "awake",
-                        "resume",
-                        "sleep",
-                        "refresh",
-                        "alive",
-                        "ping"
-                    ];
-                    if (allowed.indexOf(commandName) === -1) return;
-                }
-            } catch (e) {}
-
-            const command = commands.get(commandName);
-
-            if (!command) {
-                await sock
-                    .sendMessage(
-                        from,
-                        {
-                            text:
-                                "╭━━〔 ❓ VENOM X 〕━━⬣\n\n" +
-                                "❌ Command not found: " +
-                                prefix +
-                                commandName +
-                                "\n\n" +
-                                "Type " +
-                                prefix +
-                                "menu or " +
-                                prefix +
-                                "m to see all commands.\n\n" +
-                                "╰━━━━━━━━━━━━━━━━⬣"
-                        },
-                        { quoted: msg }
-                    )
-                    .catch(function () {});
-                return;
-            }
-
-            if (typeof command.run !== "function") {
-                console.log("❌ Broken command: " + commandName);
-                return;
-            }
-
-            // Private mode: owner OR sudo
+            // private mode
             if (
-                String(settings.mode || "").toLowerCase() === "private" &&
+                String(settings.mode || "public").toLowerCase() === "private" &&
                 !isPrivileged
             ) {
                 return;
             }
 
-            const reply = async function (text, extra) {
+            // global ban
+            try {
+                const banlist = require("../lib/banlist");
+                if (!isPrivileged && typeof banlist.isBanned === "function") {
+                    if (banlist.isBanned(sender) || banlist.isBanned(senderPn)) {
+                        return;
+                    }
+                }
+            } catch (e) {}
+
+            // must start with prefix
+            if (!body.startsWith(prefix)) return;
+
+            const withoutPrefix = body.slice(prefix.length).trim();
+            if (!withoutPrefix) return;
+
+            const parts = withoutPrefix.split(/\s+/);
+            const commandName = String(parts[0] || "").toLowerCase();
+            const args = parts.slice(1);
+
+            const command = commands.get(commandName);
+            if (!command || typeof command.run !== "function") return;
+
+            // reply helper
+            const reply = async function (text) {
                 return sock.sendMessage(
                     from,
-                    Object.assign({ text: String(text) }, extra || {}),
+                    { text: String(text) },
                     { quoted: msg }
                 );
             };
 
-            const reactEmoji = reactions[commandName] || reactions.default;
-            sock
-                .sendMessage(from, {
+            // optional react
+            try {
+                const reactMap = settings.react || {};
+                const reactEmoji =
+                    (reactMap && reactMap[commandName]) ||
+                    settings.commandReact ||
+                    "⚡";
+                await sock.sendMessage(from, {
                     react: { text: reactEmoji, key: msg.key }
-                })
-                .catch(function () {});
+                });
+            } catch (e) {}
 
             console.log("🚀 RUNNING COMMAND:", commandName);
             const start = Date.now();
@@ -479,10 +376,17 @@ module.exports = function (sock) {
                 });
 
                 console.log(
-                    "✅ " + commandName + " finished in " + (Date.now() - start) + "ms"
+                    "✅ " +
+                        commandName +
+                        " finished in " +
+                        (Date.now() - start) +
+                        "ms"
                 );
             } catch (err) {
-                console.log("❌ Command Error [" + commandName + "]:", err.message);
+                console.log(
+                    "❌ Command Error [" + commandName + "]:",
+                    err.message
+                );
                 await sock
                     .sendMessage(
                         from,
@@ -494,7 +398,7 @@ module.exports = function (sock) {
         } catch (err) {
             console.log("❌ MESSAGE HANDLER ERROR:", err.message);
         }
-    }
+    });
 
     sock.reloadCommands = loadCommands;
     sock.getCommands = function () {

@@ -1,85 +1,198 @@
-const originalConsoleError = console.error;
-console.error = (...args) => {
-    const text = args.map(a => String(a)).join(" ");
-    if (
-        text.includes("Bad MAC") ||
-        text.includes("Failed to decrypt") ||
-        text.includes("Session error") ||
-        text.includes("Closing session:") ||
-        text.includes("Closing open session in favor of incoming prekey") ||
-        text.includes("SessionEntry")
-    ) {
-        return;
-    }
-    originalConsoleError(...args);
-};
-
-const originalConsoleLog = console.log;
-console.log = (...args) => {
-    const text = args.map(a => String(a)).join(" ");
-    if (
-        text.includes("Bad MAC") ||
-        text.includes("Failed to decrypt") ||
-        text.includes("Session error") ||
-        text.includes("Closing session:") ||
-        text.includes("Closing open session in favor of incoming prekey") ||
-        text.includes("SessionEntry")
-    ) {
-        return;
-    }
-    originalConsoleLog(...args);
-};
+/**
+ * VENOM X - entry (Baileys 7 compatible)
+ * CommonJS host + dynamic import of ESM Baileys
+ */
 
 require("dotenv").config();
 
+const fs = require("fs");
+const path = require("path");
 const http = require("http");
-const axios = require("axios");
-const { startTelegramBot } = require("./telegram/bot");
+const pino = require("pino");
 
-const PORT = Number(process.env.PORT || 10000);
-const HOST = "0.0.0.0";
+const PORT = process.env.PORT || 3000;
 
-const healthServer = http.createServer((req, res) => {
-    if (req.url === "/" || req.url === "/health" || req.url === "/ping") {
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({
-            status: "online",
-            service: "VENOM X",
-            telegram: "running"
-        }));
-        return;
+// keep Render / host awake
+const server = http.createServer(function (req, res) {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end("VENOM X online\n");
+});
+server.listen(PORT, function () {
+    console.log("🌐 HTTP server on port " + PORT);
+});
+
+const AUTH_DIR = process.env.AUTH_DIR || path.join(__dirname, "auth_info_baileys");
+const logger = pino({ level: process.env.LOG_LEVEL || "silent" });
+
+let sock = null;
+let baileys = null;
+let reconnectTimer = null;
+
+function ensureDir(dir) {
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
     }
-    res.writeHead(404);
-    res.end("Not Found");
-});
+}
 
-healthServer.listen(PORT, HOST, () => {
-    console.log(`VENOM X health server listening on \( {HOST}: \){PORT}`);
+async function loadBaileys() {
+    if (baileys) return baileys;
+    baileys = await import("@whiskeysockets/baileys");
+    return baileys;
+}
 
-    // Render free-tier keep-alive (only when RENDER_EXTERNAL_URL exists)
-    if (process.env.RENDER_EXTERNAL_URL) {
-        console.log("🔄 Auto-ping enabled for Render");
-        setInterval(() => {
-            axios
-                .get(String(process.env.RENDER_EXTERNAL_URL).replace(/\/$/, "") + "/ping", {
-                    timeout: 15000
-                })
-                .then(() => console.log("✅ Ping successful"))
-                .catch(() => console.log("⚠️ Ping failed"));
-        }, 14 * 60 * 1000);
+function bindHandlers(socket) {
+    try {
+        const messagesHandler = require("./handlers/messages");
+        messagesHandler(socket);
+    } catch (e) {
+        console.log("⚠️ messages handler:", e.message);
     }
+
+    // optional extra handlers
+    const optional = [
+        "./handlers/antilink",
+        "./handlers/antistatustag"
+    ];
+    for (let i = 0; i < optional.length; i++) {
+        try {
+            const h = require(optional[i]);
+            if (typeof h === "function") h(socket);
+        } catch (e) {
+            // missing handler is fine
+        }
+    }
+}
+
+async function startBot() {
+    ensureDir(AUTH_DIR);
+
+    const B = await loadBaileys();
+
+    const makeWASocket =
+        B.default ||
+        B.makeWASocket ||
+        (B.default && B.default.makeWASocket);
+
+    const {
+        useMultiFileAuthState,
+        DisconnectReason,
+        fetchLatestBaileysVersion,
+        makeCacheableSignalKeyStore,
+        Browsers
+    } = B;
+
+    if (typeof makeWASocket !== "function") {
+        throw new Error("makeWASocket not found in Baileys export");
+    }
+
+    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+
+    let version;
+    try {
+        const v = await fetchLatestBaileysVersion();
+        version = v.version;
+        console.log("📲 WA Web version:", version.join("."));
+    } catch (e) {
+        console.log("⚠️ fetchLatestBaileysVersion failed, using default");
+    }
+
+    sock = makeWASocket({
+        version: version,
+        logger: logger,
+        printQRInTerminal: false,
+        auth: {
+            creds: state.creds,
+            keys: makeCacheableSignalKeyStore
+                ? makeCacheableSignalKeyStore(state.keys, logger)
+                : state.keys
+        },
+        browser: Browsers && Browsers.ubuntu
+            ? Browsers.ubuntu("Chrome")
+            : ["VENOM-X", "Chrome", "120.0.0"],
+        generateHighQualityLinkPreview: true,
+        syncFullHistory: false,
+        markOnlineOnConnect: false,
+        getMessage: async function () {
+            return undefined;
+        }
+    });
+
+    sock.ev.on("creds.update", saveCreds);
+
+    sock.ev.on("connection.update", async function (update) {
+        const connection = update.connection;
+        const lastDisconnect = update.lastDisconnect;
+        const qr = update.qr;
+
+        if (qr) {
+            console.log("🔑 QR received — scan or use pairing code flow");
+            try {
+                const qrcode = require("qrcode-terminal");
+                qrcode.generate(qr, { small: true });
+            } catch (e) {}
+        }
+
+        if (connection === "open") {
+            console.log("✅ VENOM X connected");
+            if (reconnectTimer) {
+                clearTimeout(reconnectTimer);
+                reconnectTimer = null;
+            }
+        }
+
+        if (connection === "close") {
+            const statusCode =
+                lastDisconnect &&
+                lastDisconnect.error &&
+                lastDisconnect.error.output &&
+                lastDisconnect.error.output.statusCode;
+
+            const loggedOut =
+                statusCode === DisconnectReason.loggedOut ||
+                statusCode === 401;
+
+            console.log("❌ Connection closed. code:", statusCode);
+
+            if (loggedOut) {
+                console.log("🚪 Logged out — delete auth and pair again");
+                return;
+            }
+
+            if (!reconnectTimer) {
+                reconnectTimer = setTimeout(function () {
+                    reconnectTimer = null;
+                    console.log("🔄 Reconnecting...");
+                    startBot().catch(function (err) {
+                        console.log("Reconnect failed:", err.message);
+                    });
+                }, 4000);
+            }
+        }
+    });
+
+    bindHandlers(sock);
+
+    // optional telegram / pair bridge
+    try {
+        const tg = require("./telegram");
+        if (tg && typeof tg.start === "function") {
+            tg.start(sock);
+        }
+    } catch (e) {}
+
+    global.sock = sock;
+    return sock;
+}
+
+startBot().catch(function (err) {
+    console.error("FATAL start error:", err);
+    process.exit(1);
 });
 
-console.log("🐍 VENOM X — Telegram Pairing Service");
-console.log("🔐 License system enabled");
-console.log("📱 Multi-number WhatsApp sessions enabled");
-
-startTelegramBot();
-
-process.on("unhandledRejection", reason => {
-    console.log("⚠️ UNHANDLED REJECTION:", reason?.message || reason);
+process.on("unhandledRejection", function (err) {
+    console.log("unhandledRejection:", err && err.message ? err.message : err);
 });
 
-process.on("uncaughtException", error => {
-    console.log("⚠️ UNCAUGHT EXCEPTION:", error?.message || error);
+process.on("uncaughtException", function (err) {
+    console.log("uncaughtException:", err && err.message ? err.message : err);
 });
