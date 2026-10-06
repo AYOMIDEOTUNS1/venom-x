@@ -1,6 +1,6 @@
 /**
- * VENOM X - entry (Baileys 7 compatible)
- * CommonJS host + dynamic import of ESM Baileys
+ * VENOM X - entry (Baileys 7)
+ * Telegram: startTelegramBot from ./telegram/bot
  */
 
 require("dotenv").config();
@@ -12,7 +12,6 @@ const pino = require("pino");
 
 const PORT = process.env.PORT || 3000;
 
-// keep Render / host awake
 const server = http.createServer(function (req, res) {
     res.writeHead(200, { "Content-Type": "text/plain" });
     res.end("VENOM X online\n");
@@ -21,7 +20,8 @@ server.listen(PORT, function () {
     console.log("🌐 HTTP server on port " + PORT);
 });
 
-const AUTH_DIR = process.env.AUTH_DIR || path.join(__dirname, "auth_info_baileys");
+const AUTH_DIR =
+    process.env.AUTH_DIR || path.join(__dirname, "auth_info_baileys");
 const logger = pino({ level: process.env.LOG_LEVEL || "silent" });
 
 let sock = null;
@@ -48,18 +48,12 @@ function bindHandlers(socket) {
         console.log("⚠️ messages handler:", e.message);
     }
 
-    // optional extra handlers
-    const optional = [
-        "./handlers/antilink",
-        "./handlers/antistatustag"
-    ];
+    const optional = ["./handlers/antilink", "./handlers/antistatustag"];
     for (let i = 0; i < optional.length; i++) {
         try {
             const h = require(optional[i]);
             if (typeof h === "function") h(socket);
-        } catch (e) {
-            // missing handler is fine
-        }
+        } catch (e) {}
     }
 }
 
@@ -106,9 +100,10 @@ async function startBot() {
                 ? makeCacheableSignalKeyStore(state.keys, logger)
                 : state.keys
         },
-        browser: Browsers && Browsers.ubuntu
-            ? Browsers.ubuntu("Chrome")
-            : ["VENOM-X", "Chrome", "120.0.0"],
+        browser:
+            Browsers && Browsers.ubuntu
+                ? Browsers.ubuntu("Chrome")
+                : ["VENOM-X", "Chrome", "120.0.0"],
         generateHighQualityLinkPreview: true,
         syncFullHistory: false,
         markOnlineOnConnect: false,
@@ -172,13 +167,23 @@ async function startBot() {
 
     bindHandlers(sock);
 
-    // optional telegram / pair bridge
+    // Telegram — correct export name
     try {
-        const tg = require("./telegram");
-        if (tg && typeof tg.start === "function") {
-            tg.start(sock);
+        const tg = require("./telegram/bot");
+        if (tg && typeof tg.startTelegramBot === "function") {
+            console.log("📲 Starting Telegram...");
+            Promise.resolve(tg.startTelegramBot(sock)).catch(function (err) {
+                console.log(
+                    "❌ Telegram failed:",
+                    err && err.message ? err.message : err
+                );
+            });
+        } else {
+            console.log("⚠️ startTelegramBot not found on telegram/bot");
         }
-    } catch (e) {}
+    } catch (e) {
+        console.log("❌ Telegram require failed:", e.message);
+    }
 
     global.sock = sock;
     return sock;
@@ -190,9 +195,15 @@ startBot().catch(function (err) {
 });
 
 process.on("unhandledRejection", function (err) {
-    console.log("unhandledRejection:", err && err.message ? err.message : err);
+    console.log(
+        "unhandledRejection:",
+        err && err.message ? err.message : err
+    );
 });
 
 process.on("uncaughtException", function (err) {
-    console.log("uncaughtException:", err && err.message ? err.message : err);
+    console.log(
+        "uncaughtException:",
+        err && err.message ? err.message : err
+    );
 });
