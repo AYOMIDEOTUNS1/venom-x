@@ -1,6 +1,7 @@
 /**
  * VENOM X - entry (Baileys 7)
  * Telegram: startTelegramBot from ./telegram/bot
+ * Auto pinger for Render keep-alive
  */
 
 require("dotenv").config();
@@ -19,6 +20,26 @@ const server = http.createServer(function (req, res) {
 server.listen(PORT, function () {
     console.log("🌐 HTTP server on port " + PORT);
 });
+
+// ---------- AUTO PINGER ----------
+const PING_URL =
+    process.env.PING_URL ||
+    process.env.RENDER_EXTERNAL_URL ||
+    "";
+const PING_MS = Number(process.env.PING_INTERVAL_MS) || 10 * 60 * 1000;
+
+if (PING_URL) {
+    setInterval(function () {
+        fetch(PING_URL).catch(function () {});
+    }, PING_MS);
+    // first ping after 30s
+    setTimeout(function () {
+        fetch(PING_URL).catch(function () {});
+    }, 30000);
+    console.log("🏓 Auto pinger every", Math.round(PING_MS / 60000), "min →", PING_URL);
+} else {
+    console.log("🏓 Auto pinger off (set PING_URL or RENDER_EXTERNAL_URL)");
+}
 
 const AUTH_DIR =
     process.env.AUTH_DIR || path.join(__dirname, "auth_info_baileys");
@@ -167,7 +188,6 @@ async function startBot() {
 
     bindHandlers(sock);
 
-    // Telegram — correct export name
     try {
         const tg = require("./telegram/bot");
         if (tg && typeof tg.startTelegramBot === "function") {
