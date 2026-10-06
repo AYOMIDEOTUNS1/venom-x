@@ -1,7 +1,7 @@
 /**
- * VENOM X - entry (Baileys 7)
- * Telegram: startTelegramBot from ./telegram/bot
- * Auto pinger for Render keep-alive
+ * VENOM X - Baileys 7
+ * Pair via Telegram (no QR)
+ * Auto pinger + startTelegramBot
  */
 
 require("dotenv").config();
@@ -21,7 +21,7 @@ server.listen(PORT, function () {
     console.log("🌐 HTTP server on port " + PORT);
 });
 
-// ---------- AUTO PINGER ----------
+// Auto pinger
 const PING_URL =
     process.env.PING_URL ||
     process.env.RENDER_EXTERNAL_URL ||
@@ -32,13 +32,17 @@ if (PING_URL) {
     setInterval(function () {
         fetch(PING_URL).catch(function () {});
     }, PING_MS);
-    // first ping after 30s
     setTimeout(function () {
         fetch(PING_URL).catch(function () {});
     }, 30000);
-    console.log("🏓 Auto pinger every", Math.round(PING_MS / 60000), "min →", PING_URL);
+    console.log(
+        "🏓 Auto pinger every",
+        Math.round(PING_MS / 60000),
+        "min →",
+        PING_URL
+    );
 } else {
-    console.log("🏓 Auto pinger off (set PING_URL or RENDER_EXTERNAL_URL)");
+    console.log("🏓 Auto pinger off (set PING_URL)");
 }
 
 const AUTH_DIR =
@@ -138,18 +142,16 @@ async function startBot() {
     sock.ev.on("connection.update", async function (update) {
         const connection = update.connection;
         const lastDisconnect = update.lastDisconnect;
-        const qr = update.qr;
 
-        if (qr) {
-            console.log("🔑 QR received — scan or use pairing code flow");
-            try {
-                const qrcode = require("qrcode-terminal");
-                qrcode.generate(qr, { small: true });
-            } catch (e) {}
+        // no QR printing — pair from Telegram
+        if (update.qr) {
+            console.log(
+                "⏳ WhatsApp waiting for session — use Telegram to pair (no QR)"
+            );
         }
 
         if (connection === "open") {
-            console.log("✅ VENOM X connected");
+            console.log("✅ VENOM X WhatsApp connected");
             if (reconnectTimer) {
                 clearTimeout(reconnectTimer);
                 reconnectTimer = null;
@@ -167,17 +169,17 @@ async function startBot() {
                 statusCode === DisconnectReason.loggedOut ||
                 statusCode === 401;
 
-            console.log("❌ Connection closed. code:", statusCode);
+            console.log("❌ WhatsApp closed. code:", statusCode);
 
             if (loggedOut) {
-                console.log("🚪 Logged out — delete auth and pair again");
+                console.log("🚪 Logged out — pair again from Telegram");
                 return;
             }
 
             if (!reconnectTimer) {
                 reconnectTimer = setTimeout(function () {
                     reconnectTimer = null;
-                    console.log("🔄 Reconnecting...");
+                    console.log("🔄 Reconnecting WhatsApp...");
                     startBot().catch(function (err) {
                         console.log("Reconnect failed:", err.message);
                     });
@@ -188,6 +190,7 @@ async function startBot() {
 
     bindHandlers(sock);
 
+    // Telegram first-class (pairing + control)
     try {
         const tg = require("./telegram/bot");
         if (tg && typeof tg.startTelegramBot === "function") {
@@ -199,7 +202,7 @@ async function startBot() {
                 );
             });
         } else {
-            console.log("⚠️ startTelegramBot not found on telegram/bot");
+            console.log("⚠️ startTelegramBot not found");
         }
     } catch (e) {
         console.log("❌ Telegram require failed:", e.message);

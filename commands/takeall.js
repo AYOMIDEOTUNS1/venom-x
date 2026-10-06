@@ -1,11 +1,6 @@
 /**
- * Pack every sticker sent in this group into one sticker pack.
- * Stickers must be sent AFTER the bot restarted (collector is in memory).
- * #takeall
- * #takeall My Pack
+ * Pack stickers collected in this group (no wa-sticker-formatter)
  */
-
-const { Sticker } = require("wa-sticker-formatter");
 const collector = require("../lib/stickerCollector");
 
 module.exports = {
@@ -19,55 +14,36 @@ module.exports = {
         if (!stickers.length) {
             return reply(
 "╭━━〔 📦 TAKEALL 〕━━⬣\n" +
-"┃\n" +
-"┃ No stickers collected in this group yet.\n" +
-"┃\n" +
-"┃ Send stickers in the group, then:\n" +
+"┃ No stickers collected yet.\n" +
+"┃ Send stickers in this group, then:\n" +
 "┃ #takeall\n" +
-"┃ #takeall Pack Name\n" +
-"┃\n" +
-"┃ Only stickers sent after the bot\n" +
-"┃ started are saved (max 30).\n" +
-"┃\n" +
+"┃ (max 30 after bot start)\n" +
 "╰━━━━━━━━━━━━━━━━⬣"
             );
         }
 
         const pack = (args && args.join(" ").trim()) || "VENOM X";
-        const author = "VENOM X";
-
-        await reply("📦 Packing " + stickers.length + " sticker(s) as *" + pack + "*...");
+        await reply("📦 Sending " + stickers.length + " sticker(s)...");
 
         let sent = 0;
         for (let i = 0; i < stickers.length; i++) {
             try {
-                const sticker = new Sticker(stickers[i], {
-                    pack: pack,
-                    author: author,
-                    type: "full",
-                    quality: 70
-                });
-                const buffer = await sticker.toBuffer();
-                await sock.sendMessage(from, { sticker: buffer }, { quoted: message });
+                await sock.sendMessage(
+                    from,
+                    { sticker: stickers[i] },
+                    { quoted: message }
+                );
                 sent++;
-                await new Promise(function (r) { setTimeout(r, 500); });
-            } catch (e) {
-                // fallback: send raw webp
-                try {
-                    await sock.sendMessage(from, { sticker: stickers[i] }, { quoted: message });
-                    sent++;
-                } catch (e2) {}
-            }
+                await new Promise(function (r) {
+                    setTimeout(r, 450);
+                });
+            } catch (e) {}
         }
 
         return reply(
 "╭━━〔 📦 TAKEALL 〕━━⬣\n" +
-"┃ Pack: " + pack + "\n" +
-"┃ Author: " + author + "\n" +
+"┃ Pack tag: " + pack + "\n" +
 "┃ Sent: " + sent + "/" + stickers.length + "\n" +
-"┃\n" +
-"┃ Save them in WhatsApp to keep\n" +
-"┃ them as one pack.\n" +
 "╰━━━━━━━━━━━━━━━━⬣"
         );
     }

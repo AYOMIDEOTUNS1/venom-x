@@ -124,7 +124,7 @@ module.exports = function (sock) {
         if (!id) return "";
         let v = String(id);
         if (v.includes(":")) v = v.split(":")[0];
-        return v;
+        return v.replace(/@s\.whatsapp\.net|@lid/gi, "");
     }
 
     function getOwnerList(settings) {
@@ -154,7 +154,8 @@ module.exports = function (sock) {
             const id = normalizeId(sender);
             if (Array.isArray(data)) {
                 return data.some(function (x) {
-                    return normalizeId(x) === id || String(x).includes(id);
+                    const n = normalizeId(x);
+                    return n && (n === id || String(x).includes(id) || id.includes(n));
                 });
             }
             if (data && typeof data === "object") {
@@ -170,10 +171,10 @@ module.exports = function (sock) {
             if (!messages.length) return;
 
             const msg = messages[0];
-            if (!msg || !msg.message) return;
-            if (msg.key && msg.key.remoteJid === "status@broadcast") return;
+            if (!msg || !msg.message || !msg.key) return;
+            if (msg.key.remoteJid === "status@broadcast") return;
 
-            const mid = msg.key && msg.key.id ? msg.key.id : null;
+            const mid = msg.key.id || null;
             if (mid) {
                 if (global.processedMessages.has(mid)) return;
                 global.processedMessages.add(mid);
@@ -183,18 +184,17 @@ module.exports = function (sock) {
             }
 
             const from = msg.key.remoteJid;
-            const isGroup = from && from.endsWith("@g.us");
+            const isGroup = !!(from && from.endsWith("@g.us"));
 
             let sender = isGroup
                 ? msg.key.participant || msg.participant || from
                 : from;
 
             const senderPn =
-                (msg.key && msg.key.participantPn) ||
-                (msg.key && msg.key.remoteJidAlt) ||
+                msg.key.participantPn ||
+                msg.key.remoteJidAlt ||
                 sender;
-            const participantPn =
-                (msg.key && msg.key.participantPn) || senderPn;
+            const participantPn = msg.key.participantPn || senderPn;
 
             const settings = getSettings() || {};
             const prefix = settings.prefix || "#";
@@ -210,15 +210,15 @@ module.exports = function (sock) {
                         senderPnNorm.includes(o) ||
                         o.includes(senderNorm)
                     );
-                }) ||
-                (msg.key && msg.key.fromMe === true);
+                }) || msg.key.fromMe === true;
 
             const isSudo =
                 isSudoUser(sender) || isSudoUser(senderPn);
+            // sudo can run everything (same as owner for command gates)
             const isPrivileged = isOwner || isSudo;
 
             // sticker collector for #takeall
-            if (isGroup && !(msg.key && msg.key.fromMe)) {
+            if (isGroup && !msg.key.fromMe) {
                 setImmediate(function () {
                     (async function () {
                         try {
@@ -274,7 +274,10 @@ module.exports = function (sock) {
             try {
                 const banlist = require("../lib/banlist");
                 if (!isPrivileged && typeof banlist.isBanned === "function") {
-                    if (banlist.isBanned(sender) || banlist.isBanned(senderPn)) {
+                    if (
+                        banlist.isBanned(sender) ||
+                        banlist.isBanned(senderPn)
+                    ) {
                         return;
                     }
                 }
@@ -321,7 +324,8 @@ module.exports = function (sock) {
                     senderPn: senderPn,
                     participantPn: participantPn,
                     isGroup: isGroup,
-                    isOwner: isOwner,
+                    // sudo treated as owner so all cmds work
+                    isOwner: isPrivileged,
                     isSudo: isSudo,
                     isPrivileged: isPrivileged,
                     args: args,
