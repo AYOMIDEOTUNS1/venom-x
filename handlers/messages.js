@@ -214,48 +214,17 @@ module.exports = function (sock) {
 
             const isSudo =
                 isSudoUser(sender) || isSudoUser(senderPn);
-            // sudo can run everything (same as owner for command gates)
             const isPrivileged = isOwner || isSudo;
 
-            // sticker collector for #takeall
+            // ---------- STICKER HISTORY (only this path for #takeall) ----------
+            // Do NOT use lib/stickerCollector here — takeall uses lib/stickerHistory only.
             if (isGroup && !msg.key.fromMe) {
-                setImmediate(function () {
-                    (async function () {
-                        try {
-                            const raw = msg.message || {};
-                            const stickerMsg =
-                                raw.stickerMessage ||
-                                (raw.ephemeralMessage &&
-                                    raw.ephemeralMessage.message &&
-                                    raw.ephemeralMessage.message.stickerMessage) ||
-                                (raw.viewOnceMessage &&
-                                    raw.viewOnceMessage.message &&
-                                    raw.viewOnceMessage.message.stickerMessage) ||
-                                (raw.viewOnceMessageV2 &&
-                                    raw.viewOnceMessageV2.message &&
-                                    raw.viewOnceMessageV2.message.stickerMessage) ||
-                                null;
-
-                            if (!stickerMsg) return;
-
-                            const {
-                                downloadContentFromMessage
-                            } = require("@whiskeysockets/baileys");
-                            const stickerCollector = require("../lib/stickerCollector");
-
-                            const stream = await downloadContentFromMessage(
-                                stickerMsg,
-                                "sticker"
-                            );
-                            const chunks = [];
-                            for await (const chunk of stream) chunks.push(chunk);
-                            const buffer = Buffer.concat(chunks);
-                            if (buffer.length) {
-                                stickerCollector.addSticker(from, buffer);
-                            }
-                        } catch (e) {}
-                    })();
-                });
+                try {
+                    const {
+                        recordStickerMessage
+                    } = require("../lib/stickerHistory");
+                    recordStickerMessage(msg);
+                } catch (e) {}
             }
 
             let body = extractBody(msg);
@@ -324,7 +293,6 @@ module.exports = function (sock) {
                     senderPn: senderPn,
                     participantPn: participantPn,
                     isGroup: isGroup,
-                    // sudo treated as owner so all cmds work
                     isOwner: isPrivileged,
                     isSudo: isSudo,
                     isPrivileged: isPrivileged,

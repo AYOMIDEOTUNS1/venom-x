@@ -1,14 +1,46 @@
 /**
- * VENOM X Group Status (Baileys 7)
- * #status2 / #gcstatus text | reply media
+ * VENOM X - Group Status (Baileys 7)
+ * #gcstatus / #status2
+ * Multi-group | colors | media | text
  */
 
 "use strict";
 
+const fs = require("fs");
+const path = require("path");
 const { downloadContentFromMessage } = require("@whiskeysockets/baileys");
 const { getSettings } = require("../lib/settingsCache");
 
+const CONFIG_PATH = path.join(__dirname, "../data/gcstatus.json");
+const GROUPS_CACHE_FILE = path.join(__dirname, "../data/gcstatus_list.json");
+const MEMORY_GROUP_CACHE = new Map();
+const CACHE_TTL_MS = 10 * 60 * 1000;
 const DEFAULT_COLOR = "#9C27B0";
+
+const COLOR_MAP = {
+    purple: "#9C27B0",
+    violet: "#7B1FA2",
+    pink: "#E91E63",
+    hotpink: "#FF4081",
+    red: "#F44336",
+    orange: "#FF5722",
+    amber: "#FF8F00",
+    yellow: "#FFC107",
+    lime: "#8BC34A",
+    green: "#4CAF50",
+    teal: "#009688",
+    cyan: "#00BCD4",
+    blue: "#2196F3",
+    navy: "#1565C0",
+    indigo: "#3F51B5",
+    black: "#212121",
+    dark: "#263238",
+    grey: "#607D8B",
+    white: "#FAFAFA",
+    brown: "#795548",
+    gold: "#F9A825",
+    maroon: "#880E4F"
+};
 
 function px() {
     try {
@@ -16,6 +48,58 @@ function px() {
     } catch (e) {
         return "#";
     }
+}
+
+function loadConfig() {
+    try {
+        if (!fs.existsSync(CONFIG_PATH)) return {};
+        return JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
+    } catch (e) {
+        return {};
+    }
+}
+
+function saveConfig(cfg) {
+    try {
+        const dir = path.dirname(CONFIG_PATH);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
+    } catch (e) {}
+}
+
+function getGroupSettings(groupId) {
+    const raw = loadConfig()[groupId];
+    if (!raw) return { color: null };
+    if (typeof raw === "string") return { color: raw };
+    return { color: raw.color || null };
+}
+
+function resolveColor(name) {
+    const lower = String(name || "").toLowerCase().trim();
+    if (COLOR_MAP[lower]) return COLOR_MAP[lower];
+    const hex = lower.replace("#", "");
+    if (/^[0-9a-f]{6}$/i.test(hex)) return "#" + hex;
+    return null;
+}
+
+function pickColor(groupId, inlineColor) {
+    if (inlineColor) return inlineColor;
+    const saved = getGroupSettings(groupId).color;
+    if (!saved || saved === "random") {
+        return (
+            "#" +
+            Math.floor(Math.random() * 0xffffff)
+                .toString(16)
+                .padStart(6, "0")
+        );
+    }
+    return resolveColor(saved) || DEFAULT_COLOR;
+}
+
+function extractDigits(jid) {
+    return String(jid || "")
+        .split("@")[0]
+        .replace(/\D/g, "");
 }
 
 function unwrap(message) {
@@ -51,8 +135,48 @@ async function downloadMedia(message, type) {
     return Buffer.concat(chunks);
 }
 
-async function postGroupStatus(sock, groupJid, content) {
-    // Prefer participant list for visibility in group
+async function fetchUserGroups(sock) {
+    const cacheKey = "bot";
+    const cached = MEMORY_GROUP_CACHE.get(cacheKey);
+    if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
+        return cached.list;
+    }
+
+    let rawMap = {};
+    try {
+        if (typeof sock.groupFetchAllParticipating === "function") {
+            rawMap = await sock.groupFetchAllParticipating();
+        }
+    } catch (e) {
+        console.log("[gcstatus] fetch groups:", e.message);
+    }
+
+    const list = Object.values(rawMap || {})
+        .map(function (g, idx) {
+            return {
+                index: idx + 1,
+                jid: g.id,
+                name: g.subject || g.id
+            };
+        })
+        .sort(function (a, b) {
+            return String(a.name).localeCompare(String(b.name));
+        })
+        .map(function (g, idx) {
+            return { index: idx + 1, jid: g.jid, name: g.name };
+        });
+
+    MEMORY_GROUP_CACHE.set(cacheKey, { list: list, ts: Date.now() });
+    try {
+        const dir = path.dirname(GROUPS_CACHE_FILE);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(GROUPS_CACHE_FILE, JSON.stringify(list, null, 2));
+    } catch (e) {}
+
+    return list;
+}
+
+async function postGroupStatus(sock, groupJid, content, bgColor) {
     let statusJidList = [groupJid];
     try {
         const meta = await sock.groupMetadata(groupJid);
@@ -64,14 +188,55 @@ async function postGroupStatus(sock, groupJid, content) {
         if (parts.length) statusJidList = parts;
     } catch (e) {}
 
-    const opts = {
-        backgroundColor: DEFAULT_COLOR,
+    await sock.sendMessage("status@broadcast", content, {
+        backgroundColor: bgColor || DEFAULT_COLOR,
         font: 0,
         statusJidList: statusJidList,
         broadcast: true
-    };
+    });
+}
 
-    await sock.sendMessage("status@broadcast", content, opts);
+function parseArgs(args) {
+    const raw = (args || []).join(" ").trim();
+    let color = null;
+    let text = raw;
+
+    const colorMatch = text.match(/(?:^|\s)(?:--?color)(?:=|\s+)([^\s]+)/i);
+    if (colorMatch) {
+        color = resolveColor(colorMatch[1]);
+        text = text.replace(colorMatch[0], " ").trim();
+    }
+
+    // leading "all" or "1,2,3" or "1-3"
+    let targets = null;
+    const first = text.split(/\s+/)[0] || "";
+    if (/^(all|\*)$/i.test(first)) {
+        targets = [{ type: "all" }];
+        text = text.slice(first.length).trim();
+    } else if (/^[\d,\-\s]+$/.test(first) && /\d/.test(first)) {
+        targets = [];
+        first.split(",").forEach(function (part) {
+            part = part.trim();
+            const range = part.match(/^(\d+)\s*-\s*(\d+)$/);
+            if (range) {
+                let a = parseInt(range[1], 10);
+                let b = parseInt(range[2], 10);
+                if (a > b) {
+                    const t = a;
+                    a = b;
+                    b = t;
+                }
+                for (let i = a; i <= b && i - a < 50; i++) {
+                    targets.push({ type: "index", value: i });
+                }
+            } else if (/^\d+$/.test(part)) {
+                targets.push({ type: "index", value: parseInt(part, 10) });
+            }
+        });
+        text = text.slice(first.length).trim();
+    }
+
+    return { targets: targets, text: text, color: color };
 }
 
 module.exports = {
@@ -89,72 +254,177 @@ module.exports = {
         isOwner,
         isPrivileged
     }) {
-        if (!isGroup) {
-            return reply("❌ Use inside a group.");
+        const p = px();
+        const sub = String((args && args[0]) || "").toLowerCase();
+
+        // color set
+        if (sub === "color" && isGroup) {
+            const name = (args && args[1]) || "";
+            if (!name) {
+                return reply(
+                    "🎨 Colors: " +
+                        Object.keys(COLOR_MAP).join(", ") +
+                        "\n" +
+                        p +
+                        "gcstatus color purple"
+                );
+            }
+            if (name.toLowerCase() === "random") {
+                const cfg = loadConfig();
+                cfg[from] = { color: "random" };
+                saveConfig(cfg);
+                return reply("✅ Group status color: *random*");
+            }
+            const c = resolveColor(name);
+            if (!c) return reply("❌ Unknown color.");
+            const cfg = loadConfig();
+            cfg[from] = { color: name.toLowerCase() };
+            saveConfig(cfg);
+            return reply("✅ Group status color: *" + name + "* → " + c);
         }
 
-        if (!isOwner && !isPrivileged) {
-            // allow admins too if you want — tighten later
+        // list groups
+        if (sub === "list" || sub === "-list") {
+            const list = await fetchUserGroups(sock);
+            if (!list.length) return reply("❌ No groups found.");
+            const lines = list
+                .map(function (g) {
+                    return "│ *" + g.index + ".* " + g.name;
+                })
+                .join("\n");
+            return reply(
+"╭━━━「 📋 GROUPS 」━━━\n" +
+"│ Total: *" + list.length + "*\n│\n" +
+lines + "\n│\n" +
+"│ " + p + "gcstatus 1 Hello\n" +
+"│ " + p + "gcstatus 1,2,3 Hello\n" +
+"│ " + p + "gcstatus all Hello\n" +
+"╰━━━━━━━━━━━━━━━━━━━━\n" +
+"_VENOM X_"
+            );
         }
 
-        const caption = (args || []).join(" ").trim();
+        const parsed = parseArgs(args);
+        let targetJids = [];
 
+        if (parsed.targets && parsed.targets.length) {
+            const list = await fetchUserGroups(sock);
+            for (let i = 0; i < parsed.targets.length; i++) {
+                const t = parsed.targets[i];
+                if (t.type === "all") {
+                    targetJids = list.map(function (g) {
+                        return g.jid;
+                    });
+                    break;
+                }
+                if (t.type === "index") {
+                    const hit = list.find(function (g) {
+                        return g.index === t.value;
+                    });
+                    if (hit && targetJids.indexOf(hit.jid) === -1) {
+                        targetJids.push(hit.jid);
+                    }
+                }
+            }
+        } else if (isGroup) {
+            targetJids = [from];
+        } else {
+            return reply(
+"╭━━〔 📢 GCSTATUS 〕━━⬣\n" +
+"┃ " + p + "gcstatus Hello\n" +
+"┃ " + p + "gcstatus list\n" +
+"┃ " + p + "gcstatus 1,2 Hello\n" +
+"┃ " + p + "gcstatus all Hello\n" +
+"┃ " + p + "gcstatus color purple\n" +
+"┃ Reply media + " + p + "gcstatus\n" +
+"╰━━━━━━━━━━━━━━━━⬣"
+            );
+        }
+
+        if (!targetJids.length) {
+            return reply("❌ No target groups. Use `" + p + "gcstatus list`");
+        }
+
+        const caption = parsed.text || "";
         const ctx =
             message.message &&
             message.message.extendedTextMessage &&
             message.message.extendedTextMessage.contextInfo;
-
         const quoted = ctx && ctx.quotedMessage;
 
+        let content = null;
+
         try {
-            if (!quoted) {
-                if (!caption) {
-                    const p = px();
-                    return reply(
-"╭━━〔 📢 GROUP STATUS 〕━━⬣\n" +
-"┃ Text: " + p + "gcstatus Hello\n" +
-"┃ Media: reply image/video/audio + " + p + "gcstatus [caption]\n" +
-"╰━━━━━━━━━━━━━━━━⬣"
-                    );
+            if (quoted) {
+                const payload = unwrap(quoted);
+                const type = detectType(payload);
+                if (!type) {
+                    return reply("❌ Reply to image, video, audio, or sticker.");
                 }
+                const buffer = await downloadMedia(payload, type);
+                if (!buffer.length) throw new Error("Empty media");
 
-                await postGroupStatus(sock, from, {
-                    text: caption,
-                    backgroundColor: DEFAULT_COLOR
-                });
-                return reply("✅ Text group status posted.");
-            }
-
-            const payload = unwrap(quoted);
-            const type = detectType(payload);
-            if (!type) {
-                return reply("❌ Reply to image, video, audio, or sticker.");
-            }
-
-            await reply("⏳ Posting " + type + " group status...");
-
-            const buffer = await downloadMedia(payload, type);
-            if (!buffer || !buffer.length) throw new Error("Empty media");
-
-            if (type === "audio") {
-                await postGroupStatus(sock, from, {
-                    audio: buffer,
-                    mimetype: "audio/ogg; codecs=opus",
-                    ptt: true
-                });
-            } else if (type === "sticker") {
-                await postGroupStatus(sock, from, { sticker: buffer });
+                if (type === "audio") {
+                    content = {
+                        audio: buffer,
+                        mimetype: "audio/ogg; codecs=opus",
+                        ptt: true
+                    };
+                } else if (type === "sticker") {
+                    content = { sticker: buffer };
+                } else {
+                    content = {
+                        [type]: buffer,
+                        caption: caption || ""
+                    };
+                }
             } else {
-                await postGroupStatus(sock, from, {
-                    [type]: buffer,
-                    caption: caption || ""
-                });
+                if (!caption) {
+                    return reply("❌ Provide text or reply to media.");
+                }
+                content = { text: caption };
             }
 
-            return reply("✅ " + type + " group status posted.");
+            await reply("🚀 Posting to *" + targetJids.length + "* group(s)...");
+
+            let ok = 0;
+            let fail = 0;
+            for (let i = 0; i < targetJids.length; i++) {
+                const jid = targetJids[i];
+                try {
+                    const color = pickColor(jid, parsed.color);
+                    const body =
+                        content.text !== undefined
+                            ? {
+                                  text: content.text,
+                                  backgroundColor: color
+                              }
+                            : content;
+                    await postGroupStatus(sock, jid, body, color);
+                    ok++;
+                } catch (e) {
+                    console.log("[GCSTATUS] fail", jid, e.message);
+                    fail++;
+                }
+                if (targetJids.length > 1) {
+                    await new Promise(function (r) {
+                        setTimeout(r, 700);
+                    });
+                }
+            }
+
+            return reply(
+"✅ *Group Status*\n• Success: *" +
+                    ok +
+                    "*\n• Failed: *" +
+                    fail +
+                    "*\n• Total: *" +
+                    targetJids.length +
+                    "*\n\n_VENOM X_"
+            );
         } catch (e) {
             console.log("[GCSTATUS]", e);
-            return reply("❌ Group status failed: " + (e.message || e));
+            return reply("❌ Failed: " + (e.message || e));
         }
     }
 };
