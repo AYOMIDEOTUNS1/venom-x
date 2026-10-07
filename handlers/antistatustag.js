@@ -3,165 +3,150 @@ const path = require("path");
 
 const dbFile = path.join(__dirname, "..", "database", "antistatustag.json");
 const warnFile = path.join(__dirname, "..", "database", "antistatustag_warns.json");
-
 const MAX = 3;
 
 function loadJSON(file) {
     try {
         if (!fs.existsSync(file)) return {};
-        return JSON.parse(fs.readFileSync(file, "utf8") || "{}");
-    } catch {
+        const raw = fs.readFileSync(file, "utf8");
+        return raw.trim() ? JSON.parse(raw) : {};
+    } catch (e) {
         return {};
     }
 }
 
 function saveJSON(file, data) {
-    const dir = path.dirname(file);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(data, null, 2));
-}
-
-function cleanNumber(jid) {
-    return String(jid || "").split("@")[0].replace(/\D/g, "") || "user";
-}
-
-function unwrap(message) {
-    let current = message || {};
-    for (var i = 0; i < 6; i++) {
-        var wrapper =
-            current.ephemeralMessage ||
-            current.viewOnceMessage ||
-            current.viewOnceMessageV2 ||
-            current.viewOnceMessageV2Extension;
-        if (!wrapper || !wrapper.message) break;
-        current = wrapper.message;
-    }
-    return current;
-}
-
-function isStatusTagMessage(msg) {
-    var raw = msg.message || {};
-    var content = unwrap(raw);
-
-    // Real WhatsApp group status tag
-    if (raw.groupStatusMentionMessage) return true;
-    if (content.groupStatusMentionMessage) return true;
-    if (raw.protocolMessage && raw.protocolMessage.type === 25) return true;
-
-    var ctx =
-        (content.extendedTextMessage && content.extendedTextMessage.contextInfo) ||
-        (content.imageMessage && content.imageMessage.contextInfo) ||
-        (content.videoMessage && content.videoMessage.contextInfo) ||
-        (content.audioMessage && content.audioMessage.contextInfo) ||
-        (content.documentMessage && content.documentMessage.contextInfo) ||
-        (content.stickerMessage && content.stickerMessage.contextInfo) ||
-        {};
-
-    // Only count it if they actually tagged / forwarded a STATUS
-    if (ctx.remoteJid === "status@broadcast" && ctx.quotedMessage) return true;
-
-    if (Array.isArray(ctx.statusAttributions) && ctx.statusAttributions.length) {
-        for (var i = 0; i < ctx.statusAttributions.length; i++) {
-            var attr = ctx.statusAttributions[i] || {};
-            if (attr.type === "RESHARE" || attr.type === 2 || attr.statusReshare) return true;
-        }
-    }
-
-    // Do NOT treat normal videos/images as status tags
-    return false;
-}
-
-module.exports = async function antiStatusTag(sock, msg) {
     try {
-        var from = msg.key && msg.key.remoteJid;
-        if (!from || from.indexOf("@g.us") === -1) return;
-        if (msg.key.fromMe) return;
+        const dir = path.dirname(file);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(file, JSON.stringify(data, null, 2));
+    } catch (e) {}
+}
 
-        var db = loadJSON(dbFile);
-        if (!db[from]) return;
+function isStatusMention(msg) {
+    try {
+        if (!msg || !msg.message) return false;
+        const m = msg.message;
 
-        if (!isStatusTagMessage(msg)) return;
+        if (m.groupStatusMentionMessage) return true;
+        if (m.statusMentionMessage) return true;
 
-        var sender = msg.key.participant || msg.key.remoteJid;
-        if (!sender) return;
+        const ctx =
+            (m.extendedTextMessage && m.extendedTextMessage.contextInfo) ||
+            (m.imageMessage && m.imageMessage.contextInfo) ||
+            (m.videoMessage && m.videoMessage.contextInfo) ||
+            (m.documentMessage && m.documentMessage.contextInfo) ||
+            (m.audioMessage && m.audioMessage.contextInfo) ||
+            (m.stickerMessage && m.stickerMessage.contextInfo) ||
+            {};
 
-        await sock.sendMessage(from, { delete: msg.key }).catch(function () {});
+        if (ctx.remoteJid === "status@broadcast") return true;
+        if (ctx.entryPointConversionSource === "status_reply") return true;
 
-        var warns = loadJSON(warnFile);
-        if (!warns[from]) warns[from] = {};
-
-        var key = String(sender);
-        var count = (warns[from][key] || 0) + 1;
-        warns[from][key] = count;
-        saveJSON(warnFile, warns);
-
-        var mentionName = cleanNumber(sender);
-
-        if (count >= MAX) {
-            try {
-                await sock.groupParticipantsUpdate(from, [sender], "remove");
-                warns[from][key] = 0;
-                saveJSON(warnFile, warns);
-
-                await sock.sendMessage(from, {
-                    text:
-"╭━━〔 🚨 VENOM ANTI STATUS TAG 〕━━⬣\n" +
-"┃\n" +
-"┃ 👤 @" + mentionName + "\n" +
-"┃\n" +
-"┃ 🏷️ Status tag detected\n" +
-"┃ 🗑️ Message deleted\n" +
-"┃\n" +
-"┃ ⚠️ Warning: " + MAX + "/" + MAX + "\n" +
-"┃ 🥾 Removed from group\n" +
-"┃\n" +
-"╰━━━━━━━━━━━━━━━━⬣",
-                    mentions: [sender]
-                });
-            } catch (err) {
-                await sock.sendMessage(from, {
-                    text:
-"╭━━〔 🚨 VENOM ANTI STATUS TAG 〕━━⬣\n" +
-"┃\n" +
-"┃ 👤 @" + mentionName + "\n" +
-"┃\n" +
-"┃ 🏷️ Status tag detected\n" +
-"┃ 🗑️ Message deleted\n" +
-"┃\n" +
-"┃ ⚠️ Warning: " + MAX + "/" + MAX + "\n" +
-"┃ ❌ Removal failed\n" +
-"┃ Make sure VENOM X is admin\n" +
-"┃\n" +
-"╰━━━━━━━━━━━━━━━━⬣",
-                    mentions: [sender]
-                });
-            }
-            return;
-        }
-
-        var remaining = MAX - count;
-        var extra = remaining === 1
-            ? "⚠️ Next violation will remove the member."
-            : "Please stop tagging status in this group.";
-
-        await sock.sendMessage(from, {
-            text:
-"╭━━〔 🛡️ VENOM ANTI STATUS TAG 〕━━⬣\n" +
-"┃\n" +
-"┃ 👤 @" + mentionName + "\n" +
-"┃\n" +
-"┃ 🏷️ Status tag detected\n" +
-"┃ 🗑️ Message deleted\n" +
-"┃\n" +
-"┃ ⚠️ Warning: " + count + "/" + MAX + "\n" +
-"┃ 🚨 Warnings left: " + remaining + "\n" +
-"┃\n" +
-"┃ " + extra + "\n" +
-"┃\n" +
-"╰━━━━━━━━━━━━━━━━⬣",
-            mentions: [sender]
-        });
-    } catch (err) {
-        console.log("ANTISTATUSTAG ERROR:", err.message);
+        return false;
+    } catch (e) {
+        return false;
     }
+}
+
+async function isAdmin(sock, groupJid, userJid) {
+    try {
+        const meta = await sock.groupMetadata(groupJid);
+        const parts = meta.participants || [];
+        const hit = parts.find(function (x) {
+            const id = x.id || x.jid;
+            if (!id || !userJid) return false;
+            if (id === userJid) return true;
+            return String(id).split("@")[0] === String(userJid).split("@")[0];
+        });
+        return !!(hit && (hit.admin === "admin" || hit.admin === "superadmin"));
+    } catch (e) {
+        return false;
+    }
+}
+
+module.exports = function (sock) {
+    if (!sock || !sock.ev) {
+        console.log("⚠️ antistatustag: invalid sock");
+        return;
+    }
+
+    console.log("✅ Anti Status Tag handler loaded");
+
+    sock.ev.on("messages.upsert", async function (chatUpdate) {
+        try {
+            const messages = chatUpdate && chatUpdate.messages;
+            if (!messages || !messages.length) return;
+
+            const msg = messages[0];
+            if (!msg || !msg.key || !msg.message) return;
+            if (msg.key.fromMe) return;
+
+            const from = msg.key.remoteJid;
+            if (!from || !String(from).endsWith("@g.us")) return;
+
+            const db = loadJSON(dbFile);
+            if (!db[from]) return;
+
+            if (!isStatusMention(msg)) return;
+
+            const sender = msg.key.participant || msg.participant;
+            if (!sender) return;
+
+            // admins exempt
+            if (await isAdmin(sock, from, sender)) return;
+
+            try {
+                await sock.sendMessage(from, { delete: msg.key });
+            } catch (e) {}
+
+            const warns = loadJSON(warnFile);
+            if (!warns[from]) warns[from] = {};
+            const key = String(sender);
+            warns[from][key] = (Number(warns[from][key]) || 0) + 1;
+            const count = warns[from][key];
+            saveJSON(warnFile, warns);
+
+            const mentionName = String(sender).split("@")[0];
+
+            if (count >= MAX) {
+                try {
+                    await sock.groupParticipantsUpdate(from, [sender], "remove");
+                    warns[from][key] = 0;
+                    saveJSON(warnFile, warns);
+                    await sock.sendMessage(from, {
+                        text:
+"╭━━〔 🚨 ANTI STATUS TAG 〕━━⬣\n" +
+"┃ @" + mentionName + "\n" +
+"┃ Status tag ×" + MAX + "\n" +
+"┃ 🥾 Removed\n" +
+"╰━━━━━━━━━━━━━━━━⬣",
+                        mentions: [sender]
+                    });
+                } catch (e) {
+                    await sock.sendMessage(from, {
+                        text:
+"╭━━〔 🚨 ANTI STATUS TAG 〕━━⬣\n" +
+"┃ @" + mentionName + "\n" +
+"┃ Max warns — kick failed (bot needs admin)\n" +
+"╰━━━━━━━━━━━━━━━━⬣",
+                        mentions: [sender]
+                    });
+                }
+                return;
+            }
+
+            await sock.sendMessage(from, {
+                text:
+"╭━━〔 🛡️ ANTI STATUS TAG 〕━━⬣\n" +
+"┃ @" + mentionName + "\n" +
+"┃ Status share deleted\n" +
+"┃ Warn: " + count + "/" + MAX + "\n" +
+"╰━━━━━━━━━━━━━━━━⬣",
+                mentions: [sender]
+            });
+        } catch (err) {
+            console.log("ANTISTATUSTAG ERROR:", err && err.message ? err.message : err);
+        }
+    });
 };

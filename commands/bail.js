@@ -1,83 +1,54 @@
 const economy = require("../lib/economy");
-const settings = require("../settings.json");
+const { getSettings } = require("../lib/settingsCache");
 
-const BAIL_COST = 20000;
+const BAIL_COST = 50000;
 
 function getOwnerJid() {
-    const value =
-        settings.ownerNumber ||
-        settings.ownerLid;
-
-    if (!value) return null;
-
-    return economy.normalizeId(value);
+    try {
+        const s = getSettings() || {};
+        let n = s.ownerNumber || s.owner || process.env.OWNER_NUMBER || "";
+        if (Array.isArray(n)) n = n[0];
+        n = String(n).replace(/\D/g, "");
+        if (!n) return null;
+        return n + "@s.whatsapp.net";
+    } catch (e) {
+        return null;
+    }
 }
 
 module.exports = {
     name: "bail",
-    aliases: ["release", "free"],
+    aliases: ["bailout"],
 
-    run: async ({
-        sock,
-        from,
-        message,
-        sender
-    }) => {
-
+    run: async function ({ sock, from, sender, message, reply }) {
         const user = economy.get(sender);
         const now = Date.now();
 
-        if (
-            !user.jailedUntil ||
-            user.jailedUntil <= now
-        ) {
-            return sock.sendMessage(
-                from,
-                {
-                    text:
-`╭━━〔 🚔 VENOM BAIL 〕━━⬣
-┃
-┃ 😂 You're not in jail.
-┃
-╰━━━━━━━━━━━━━━━━⬣`
-                },
-                { quoted: message }
+        if (!user.jailedUntil || user.jailedUntil <= now) {
+            return reply(
+"╭━━〔 🚔 BAIL 〕━━⬣\n" +
+"┃ You are not in jail.\n" +
+"╰━━━━━━━━━━━━━━━━⬣"
             );
         }
 
         const ownerJid = getOwnerJid();
-
         if (!ownerJid) {
-            return sock.sendMessage(
-                from,
-                {
-                    text:
-                        "❌ Owner account is not configured."
-                },
-                { quoted: message }
-            );
+            return reply("❌ Owner not configured.");
         }
 
         if (user.balance < BAIL_COST) {
-            return sock.sendMessage(
-                from,
-                {
-                    text:
-`╭━━〔 🚔 BAIL FAILED 〕━━⬣
-┃
-┃ 💰 Bail : ${BAIL_COST.toLocaleString()} VENOM
-┃ 💵 Wallet : ${user.balance.toLocaleString()} VENOM
-┃
-┃ ❌ You cannot afford bail.
-╰━━━━━━━━━━━━━━━━⬣`
-                },
-                { quoted: message }
+            return reply(
+"╭━━〔 🚔 BAIL FAILED 〕━━⬣\n" +
+"┃ Bail : " + BAIL_COST.toLocaleString() + " VENOM\n" +
+"┃ Wallet : " + Number(user.balance || 0).toLocaleString() + " VENOM\n" +
+"┃ ❌ Not enough balance.\n" +
+"╰━━━━━━━━━━━━━━━━⬣"
             );
         }
 
         economy.add(sender, -BAIL_COST);
         economy.add(ownerJid, BAIL_COST);
-
         economy.set(sender, {
             jailedUntil: 0,
             robStars: 0,
@@ -90,17 +61,12 @@ module.exports = {
             from,
             {
                 text:
-`╭━━〔 🔓 BAIL SUCCESS 〕━━⬣
-┃
-┃ 👤 @${sender.split("@")[0]}
-┃
-┃ 💸 Bail paid : ${BAIL_COST.toLocaleString()} VENOM
-┃ 👑 Paid to : BOT OWNER
-┃
-┃ 🔓 You have been released!
-┃
-┃ 💰 Wallet : ${updated.balance.toLocaleString()} VENOM
-╰━━━━━━━━━━━━━━━━⬣`,
+"╭━━〔 🔓 BAIL SUCCESS 〕━━⬣\n" +
+"┃ 👤 @" + String(sender).split("@")[0] + "\n" +
+"┃ 💸 Paid : " + BAIL_COST.toLocaleString() + " VENOM\n" +
+"┃ 💰 Wallet : " + Number(updated.balance || 0).toLocaleString() + "\n" +
+"┃ You are free.\n" +
+"╰━━━━━━━━━━━━━━━━⬣",
                 mentions: [sender]
             },
             { quoted: message }

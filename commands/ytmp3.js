@@ -1,127 +1,52 @@
-const fs = require("fs");
-const path = require("path");
-const { spawn } = require("child_process");
-const yt = require("../lib/youtube");
-const { runYtDlp, getYtDlp } = require("../lib/ytdlp");
+const axios = require("axios");
+
+function pickUrl(text) {
+    const m = String(text || "").match(/(https?:\/\/[^\s]+)/i);
+    return m ? m[0] : "";
+}
 
 module.exports = {
     name: "ytmp3",
-    aliases: [
-        "mp3",
-        "song",
-        "music"
-    ],
+    aliases: ["yta", "ytmusic"],
 
-    run: async ({ sock, from, args, reply, message }) => {
+    run: async function ({ sock, from, args, reply, message }) {
+        const url = pickUrl((args || []).join(" "));
+        if (!url || !/youtube\.com|youtu\.be/i.test(url)) {
+            return reply("🎵 Usage: #ytmp3 <youtube url>");
+        }
 
-    if (!args.length)
-      return reply("❌ Usage:\n.ytmp3 <YouTube link or search>");
+        try {
+            await reply("⏳ Fetching audio...");
+            const api =
+                "https://api.siputzx.my.id/api/d/ytmp3?url=" +
+                encodeURIComponent(url);
+            const { data } = await axios.get(api, { timeout: 60000 });
+            const d = data.data || data.result || data;
+            const link = d.dl || d.download || d.url || d.audio;
+            const title = d.title || "YouTube Audio";
 
-    try {
+            if (!link) throw new Error("No audio link returned");
 
-      let input = args.join(" ");
+            const bin = await axios.get(link, {
+                responseType: "arraybuffer",
+                timeout: 120000,
+                maxContentLength: 30 * 1024 * 1024
+            });
+            const buffer = Buffer.from(bin.data);
+            if (buffer.length < 1000) throw new Error("Empty audio");
 
-      let data;
-
-      if (input.startsWith("http"))
-        data = await yt.info(input);
-      else
-        data = await yt.search(input);
-
-      const title = yt.sanitize(data.title);
-      const output = path.join(yt.TMP, `${title}.mp3`);
-
-      await sock.sendMessage(from, {
-    react: {
-        text: "⏳",
-        key: message.key
+            await sock.sendMessage(
+                from,
+                {
+                    audio: buffer,
+                    mimetype: "audio/mpeg",
+                    fileName: String(title).slice(0, 40) + ".mp3",
+                    ptt: false
+                },
+                { quoted: message }
+            );
+        } catch (e) {
+            return reply("❌ ytmp3 failed: " + String(e.message || e).slice(0, 180));
+        }
     }
-});
-
-await reply(
-`╭━━〔 🎧 VENOM X 〕━━⬣
-┃
-┃ 🔎 Searching...
-┃ ⬇️ Downloading Audio...
-┃
-╰━━━━━━━━━━━━━━━━⬣`
-);
-
-      const proc = null /* use runYtDlp */, [
-        "-x",
-        "--audio-format",
-        "mp3",
-        "--audio-quality",
-        "0",
-        "-o",
-        output.replace(".mp3", ".%(ext)s"),
-        data.webpage_url
-      ]);
-
-      proc.on("close", async (code) => {
-
-        if (code !== 0)
-          return reply("❌ Download failed.");
-
-        await sock.sendMessage(
-          from,
-          {
-            audio: fs.readFileSync(output),
-            mimetype: "audio/mpeg",
-            ptt: false
-          },
-          {
-            quoted: message
-          }
-        );
-
-        await reply(
-`╭━━〔 🎧 VENOM X MUSIC 〕━━⬣
-┃ 🎵 Title : ${data.title}
-┃
-┃ 👤 Channel : ${data.uploader}
-┃
-┃ ⏱ Duration : ${data.duration_string}
-┃
-┃ ✅ Audio Ready
-╰━━━━━━━━━━━━━━━━⬣`
-);
-
-await sock.sendMessage(from,{
-    react:{
-        text:"🎵",
-        key:message.key
-    }
-});
-
-await sock.sendMessage(from,{
-    react:{
-        text:"✅",
-        key:message.key
-    }
-});
-
-        fs.unlinkSync(output);
-
-      });
-
-    } catch (err) {
-      console.log(err);
-      await sock.sendMessage(from,{
-    react:{
-        text:"❌",
-        key:message.key
-    }
-});
-
-reply(
-`╭━━〔 ❌ VENOM X ERROR 〕━━⬣
-┃ Failed to download audio.
-┃
-┃ Check the link or try again.
-╰━━━━━━━━━━━━━━━━⬣`
-);
-    }
-
-  }
 };

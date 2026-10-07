@@ -1,139 +1,52 @@
-const fs = require("fs");
-const path = require("path");
-const { spawn } = require("child_process");
-const yt = require("../lib/youtube");
-const { runYtDlp, getYtDlp } = require("../lib/ytdlp");
+const axios = require("axios");
+
+function pickUrl(text) {
+    const m = String(text || "").match(/(https?:\/\/[^\s]+)/i);
+    return m ? m[0] : "";
+}
 
 module.exports = {
     name: "ytmp4",
-    aliases: [
-        "video",
-        "vid",
-        "mp4"
-    ],
+    aliases: ["ytv", "ytvideo"],
 
-    run: async ({ sock, from, args, reply, message }) => {
-
-        if (!args.length)
-            return reply(
-`╭━━〔 🎬 VENOM X VIDEO 〕━━⬣
-┃
-┃ Usage:
-┃ .ytmp4 <link or search>
-┃
-┃ Example:
-┃ .video Faded
-╰━━━━━━━━━━━━━━━━⬣`
-);
-
-        try {
-
-            let input = args.join(" ");
-
-            let data;
-
-            if (input.startsWith("http"))
-                data = await yt.info(input);
-            else
-                data = await yt.search(input);
-
-            const title = yt.sanitize(data.title);
-
-            const output = path.join(
-                yt.TMP,
-                `${title}.mp4`
-            );
-
-            await sock.sendMessage(from,{
-                react:{
-                    text:"⏳",
-                    key:message.key
-                }
-            });
-
-            await reply(
-`╭━━〔 🎬 VENOM X 〕━━⬣
-┃
-┃ 🔎 Searching...
-┃ ⬇️ Downloading Video...
-┃
-╰━━━━━━━━━━━━━━━━⬣`
-);
-
-            const proc = null /* use runYtDlp */,[
-                "-f",
-                "best[ext=mp4]",
-                "-o",
-                output,
-                data.webpage_url
-            ]);
-
-            proc.on("close",async(code)=>{
-
-                if(code!==0)
-                    return reply("❌ Download failed.");
-
-                await sock.sendMessage(
-                    from,
-                    {
-                        video:fs.readFileSync(output),
-                        caption:
-`╭━━〔 🎬 VENOM X VIDEO 〕━━⬣
-┃ 🎥 ${data.title}
-┃
-┃ 👤 ${data.uploader}
-┃
-┃ ⏱ ${data.duration_string}
-┃
-┃ ✅ Download Complete
-╰━━━━━━━━━━━━━━━━⬣`
-                    },
-                    {
-                        quoted:message
-                    }
-                );
-
-                await sock.sendMessage(from,{
-                    react:{
-                        text:"🎬",
-                        key:message.key
-                    }
-                });
-
-                await sock.sendMessage(from,{
-                    react:{
-                        text:"✅",
-                        key:message.key
-                    }
-                });
-
-                if(fs.existsSync(output))
-                    fs.unlinkSync(output);
-
-            });
-
-        } catch(err){
-
-            console.log(err);
-
-            try{
-                await sock.sendMessage(from,{
-                    react:{
-                        text:"❌",
-                        key:message.key
-                    }
-                });
-            }catch{}
-
-            reply(
-`╭━━〔 ❌ VENOM X ERROR 〕━━⬣
-┃ Failed to download video.
-┃
-┃ Check the link or try again.
-╰━━━━━━━━━━━━━━━━⬣`
-);
-
+    run: async function ({ sock, from, args, reply, message }) {
+        const url = pickUrl((args || []).join(" "));
+        if (!url || !/youtube\.com|youtu\.be/i.test(url)) {
+            return reply("🎬 Usage: #ytmp4 <youtube url>");
         }
 
+        try {
+            await reply("⏳ Fetching video...");
+            const api =
+                "https://api.siputzx.my.id/api/d/ytmp4?url=" +
+                encodeURIComponent(url);
+            const { data } = await axios.get(api, { timeout: 60000 });
+            const d = data.data || data.result || data;
+            const link = d.dl || d.download || d.url || d.video;
+            const title = d.title || "YouTube Video";
+
+            if (!link) throw new Error("No video link returned");
+
+            const bin = await axios.get(link, {
+                responseType: "arraybuffer",
+                timeout: 180000,
+                maxContentLength: 60 * 1024 * 1024
+            });
+            const buffer = Buffer.from(bin.data);
+            if (buffer.length < 1000) throw new Error("Empty video");
+
+            await sock.sendMessage(
+                from,
+                {
+                    video: buffer,
+                    mimetype: "video/mp4",
+                    caption: "🎬 *" + String(title).slice(0, 80) + "*\n⚡ VENOM X",
+                    fileName: "venom-yt.mp4"
+                },
+                { quoted: message }
+            );
+        } catch (e) {
+            return reply("❌ ytmp4 failed: " + String(e.message || e).slice(0, 180));
+        }
     }
 };
