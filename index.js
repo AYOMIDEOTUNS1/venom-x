@@ -1,6 +1,6 @@
 /**
- * VENOM X - Baileys 7
- * Telegram once | no QR | pinger | handlers
+ * VENOM X - entry (Baileys 7 compatible)
+ * Botkeep-friendly: quiet logs, backoff reconnect, single wait notice
  */
 
 require("dotenv").config();
@@ -20,20 +20,6 @@ server.listen(PORT, function () {
     console.log("🌐 HTTP server on port " + PORT);
 });
 
-const PING_URL =
-    process.env.PING_URL || process.env.RENDER_EXTERNAL_URL || "";
-const PING_MS = Number(process.env.PING_INTERVAL_MS) || 10 * 60 * 1000;
-
-if (PING_URL) {
-    setInterval(function () {
-        fetch(PING_URL).catch(function () {});
-    }, PING_MS);
-    setTimeout(function () {
-        fetch(PING_URL).catch(function () {});
-    }, 30000);
-    console.log("🏓 Auto pinger →", PING_URL);
-}
-
 const AUTH_DIR =
     process.env.AUTH_DIR || path.join(__dirname, "auth_info_baileys");
 const logger = pino({ level: process.env.LOG_LEVEL || "silent" });
@@ -41,11 +27,26 @@ const logger = pino({ level: process.env.LOG_LEVEL || "silent" });
 let sock = null;
 let baileys = null;
 let reconnectTimer = null;
-let telegramStarted = false;
 let starting = false;
+let waitNoticeShown = false;
+let reconnectAttempt = 0;
 
 function ensureDir(dir) {
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+    }
+}
+
+function hasSessionFiles() {
+    try {
+        if (!fs.existsSync(AUTH_DIR)) return false;
+        const files = fs.readdirSync(AUTH_DIR);
+        return files.some(function (f) {
+            return f.endsWith(".json");
+        });
+    } catch (e) {
+        return false;
+    }
 }
 
 async function loadBaileys() {
@@ -56,39 +57,41 @@ async function loadBaileys() {
 
 function bindHandlers(socket) {
     try {
-        require("./handlers/messages")(socket);
+        const messagesHandler = require("./handlers/messages");
+        messagesHandler(socket);
     } catch (e) {
         console.log("⚠️ messages handler:", e.message);
     }
 
-    ["./handlers/antilink", "./handlers/antistatustag"].forEach(function (p) {
+    const optional = ["./handlers/antilink", "./handlers/antistatustag"];
+    for (let i = 0; i < optional.length; i++) {
         try {
-            const h = require(p);
+            const h = require(optional[i]);
             if (typeof h === "function") h(socket);
+            else if (h && typeof h.bind === "function") h.bind(socket);
         } catch (e) {}
-    });
+    }
 }
 
-function startTelegramOnce(socket) {
-    if (telegramStarted) {
-        console.log("📲 Telegram already running — skip");
-        return;
-    }
-    try {
-        const tg = require("./telegram/bot");
-        if (tg && typeof tg.startTelegramBot === "function") {
-            telegramStarted = true;
-            console.log("📲 Starting Telegram...");
-            Promise.resolve(tg.startTelegramBot(socket)).catch(function (err) {
-                telegramStarted = false;
-                console.log("❌ Telegram failed:", err.message || err);
-            });
-        } else {
-            console.log("⚠️ startTelegramBot not found");
-        }
-    } catch (e) {
-        console.log("❌ Telegram require failed:", e.message);
-    }
+function scheduleReconnect(reason) {
+    if (reconnectTimer) return;
+
+    reconnectAttempt += 1;
+    // 5s, 10s, 20s... cap 60s
+    const delay = Math.min(60000, 5000 * Math.pow(2, Math.min(reconnectAttempt - 1, 3)));
+
+    console.log(
+        "🔄 Reconnect in " + Math.round(delay / 1000) + "s" +
+            (reason ? " (" + reason + ")" : "")
+    );
+
+    reconnectTimer = setTimeout(function () {
+        reconnectTimer = null;
+        startBot().catch(function (err) {
+            console.log("Reconnect failed:", err && err.message ? err.message : err);
+            scheduleReconnect("start failed");
+        });
+    }, delay);
 }
 
 async function startBot() {
@@ -97,72 +100,64 @@ async function startBot() {
 
     try {
         ensureDir(AUTH_DIR);
+
         const B = await loadBaileys();
-
-        const makeWASocket =
-            B.default ||
-            B.makeWASocket ||
-            (B.default && B.default.makeWASocket);
-
         const {
+            default: makeWASocket,
             useMultiFileAuthState,
             DisconnectReason,
-            fetchLatestBaileysVersion,
-            makeCacheableSignalKeyStore,
-            Browsers
+            fetchLatestBaileysVersion
         } = B;
-
-        if (typeof makeWASocket !== "function") {
-            throw new Error("makeWASocket not found");
-        }
 
         const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
 
         let version;
         try {
-            const v = await fetchLatestBaileysVersion();
-            version = v.version;
+            const ver = await fetchLatestBaileysVersion();
+            version = ver.version;
             console.log("📲 WA Web version:", version.join("."));
-        } catch (e) {}
+        } catch (e) {
+            console.log("📲 WA version fetch failed, using default");
+        }
+
+        if (sock) {
+            try {
+                sock.ev.removeAllListeners();
+                sock.end(undefined);
+            } catch (e) {}
+            sock = null;
+        }
 
         sock = makeWASocket({
             version: version,
+            auth: state,
             logger: logger,
             printQRInTerminal: false,
-            auth: {
-                creds: state.creds,
-                keys: makeCacheableSignalKeyStore
-                    ? makeCacheableSignalKeyStore(state.keys, logger)
-                    : state.keys
-            },
-            browser:
-                Browsers && Browsers.ubuntu
-                    ? Browsers.ubuntu("Chrome")
-                    : ["VENOM-X", "Chrome", "120.0.0"],
-            generateHighQualityLinkPreview: true,
+            browser: ["VENOM X", "Chrome", "120.0.0"],
             syncFullHistory: false,
             markOnlineOnConnect: false,
-            getMessage: async function () {
-                return undefined;
-            }
+            generateHighQualityLinkPreview: false
         });
 
         sock.ev.on("creds.update", saveCreds);
 
-        sock.ev.on("connection.update", async function (update) {
+        sock.ev.on("connection.update", function (update) {
             const connection = update.connection;
             const lastDisconnect = update.lastDisconnect;
+            const qr = update.qr;
 
-            if (update.qr) {
-                console.log("⏳ WA waiting — pair from Telegram");
+            if (qr) {
+                // pairing-code flow via Telegram — don't spam QR
+                if (!waitNoticeShown) {
+                    waitNoticeShown = true;
+                    console.log("⏳ WA waiting — pair from Telegram");
+                }
             }
 
             if (connection === "open") {
-                console.log("✅ VENOM X WhatsApp connected");
-                if (reconnectTimer) {
-                    clearTimeout(reconnectTimer);
-                    reconnectTimer = null;
-                }
+                waitNoticeShown = false;
+                reconnectAttempt = 0;
+                console.log("✅ WhatsApp connected");
             }
 
             if (connection === "close") {
@@ -172,48 +167,86 @@ async function startBot() {
                     lastDisconnect.error.output &&
                     lastDisconnect.error.output.statusCode;
 
-                console.log("❌ WhatsApp closed. code:", statusCode);
-
-                if (
+                const loggedOut =
                     statusCode === DisconnectReason.loggedOut ||
-                    statusCode === 401
-                ) {
-                    console.log("🚪 Logged out — pair again from Telegram");
+                    statusCode === 401;
+
+                // only log meaningful closes
+                if (statusCode && statusCode !== 408) {
+                    console.log("❌ WhatsApp closed. code:", statusCode);
+                } else if (statusCode === 408 && hasSessionFiles()) {
+                    // session exists but timed out — quiet reconnect
+                    console.log("❌ WA timeout (408) — retrying…");
+                } else if (statusCode === 408 && !hasSessionFiles()) {
+                    if (!waitNoticeShown) {
+                        waitNoticeShown = true;
+                        console.log("⏳ WA waiting — pair from Telegram");
+                    }
+                } else {
+                    console.log("❌ WhatsApp closed. code:", statusCode);
+                }
+
+                if (loggedOut) {
+                    console.log("🚪 Logged out — delete auth and pair again");
+                    waitNoticeShown = false;
                     return;
                 }
 
-                if (!reconnectTimer) {
-                    reconnectTimer = setTimeout(function () {
-                        reconnectTimer = null;
-                        starting = false;
-                        console.log("🔄 Reconnecting WhatsApp...");
-                        startBot().catch(function (err) {
-                            starting = false;
-                            console.log("Reconnect failed:", err.message);
-                        });
-                    }, 5000);
-                }
+                scheduleReconnect(statusCode ? String(statusCode) : "close");
+            }
+
+            // no session yet → one notice only
+            if (
+                connection !== "open" &&
+                !hasSessionFiles() &&
+                !waitNoticeShown
+            ) {
+                waitNoticeShown = true;
+                console.log("⏳ WA waiting — pair from Telegram");
             }
         });
 
         bindHandlers(sock);
-        startTelegramOnce(sock);
+
+        // Telegram bridge (once)
+        try {
+            const tg = require("./telegram/bot");
+            if (tg && typeof tg.startTelegramBot === "function") {
+                if (!global.__VENOM_TG_STARTED) {
+                    global.__VENOM_TG_STARTED = true;
+                    console.log("📲 Starting Telegram...");
+                    tg.startTelegramBot(sock);
+                } else {
+                    // already up — optional rebind sock if your bot supports it
+                    if (typeof tg.setSock === "function") tg.setSock(sock);
+                }
+            }
+        } catch (e) {
+            console.log("⚠️ Telegram:", e.message);
+        }
+
         global.sock = sock;
+        return sock;
     } finally {
         starting = false;
     }
-
-    return sock;
 }
 
 startBot().catch(function (err) {
-    console.error("FATAL:", err);
-    process.exit(1);
+    console.error("FATAL start error:", err);
+    scheduleReconnect("fatal");
 });
 
 process.on("unhandledRejection", function (err) {
-    console.log("unhandledRejection:", err && err.message ? err.message : err);
+    console.log(
+        "unhandledRejection:",
+        err && err.message ? err.message : err
+    );
 });
+
 process.on("uncaughtException", function (err) {
-    console.log("uncaughtException:", err && err.message ? err.message : err);
+    console.log(
+        "uncaughtException:",
+        err && err.message ? err.message : err
+    );
 });
