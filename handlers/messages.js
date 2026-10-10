@@ -261,6 +261,45 @@ module.exports = function (sock) {
             const commandName = String(parts[0] || "").toLowerCase();
             const args = parts.slice(1);
 
+            // ── Group admin-only mode (#adminonly) ─────────────────
+            if (isGroup && from.endsWith("@g.us")) {
+                try {
+                    const groupMode = require("../lib/groupMode");
+                    if (groupMode.isAdminOnly(from)) {
+                        const allowCmd =
+                            commandName === "adminonly" ||
+                            commandName === "groupprivate" ||
+                            commandName === "gprivate" ||
+                            commandName === "admonly";
+
+                        let isAdmin = isPrivileged;
+
+                        if (!isAdmin && !allowCmd) {
+                            try {
+                                const meta = await sock.groupMetadata(from);
+                                const p = (meta.participants || []).find(function (x) {
+                                    const id = x.id || x.jid || "";
+                                    return (
+                                        id === sender ||
+                                        id.split("@")[0] === String(sender).split("@")[0]
+                                    );
+                                });
+
+                                const rank = p && (p.admin || p.isAdmin || p.isSuperAdmin);
+                                isAdmin =
+                                    rank === "admin" ||
+                                    rank === "superadmin" ||
+                                    rank === true;
+                            } catch (e) {}
+                        }
+
+                        if (!isAdmin && !allowCmd) {
+                            return;
+                        }
+                    }
+                } catch (e) {}
+            }
+
             const command = commands.get(commandName);
             if (!command || typeof command.run !== "function") return;
 

@@ -1,21 +1,45 @@
 /**
  * VENOM X - Group Status
- * Text / image / video / audio / sticker → group story
- * Credits base: DevAfeez | adapted for VENOM X
+ * Base: DevAfeez | extras: DaraTech (colors, multi-group)
+ * Does NOT re-send media into the group chat — story only + text ACK
  */
 "use strict";
 
-const { PassThrough } = require("stream");
-const { exec } = require("child_process");
-const { promisify } = require("util");
-const { downloadContentFromMessage } = require("@whiskeysockets/baileys");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const crypto = require("crypto");
+const { exec } = require("child_process");
+const { promisify } = require("util");
+const { downloadContentFromMessage } = require("@whiskeysockets/baileys");
 
 const execAsync = promisify(exec);
-const PURPLE = "#9C27B0";
+
+const COLOR_MAP = {
+    purple: "#9C27B0",
+    violet: "#7B1FA2",
+    pink: "#E91E63",
+    hotpink: "#FF4081",
+    red: "#F44336",
+    orange: "#FF5722",
+    amber: "#FF8F00",
+    yellow: "#FFC107",
+    lime: "#8BC34A",
+    green: "#4CAF50",
+    teal: "#009688",
+    cyan: "#00BCD4",
+    blue: "#2196F3",
+    navy: "#1565C0",
+    indigo: "#3F51B5",
+    black: "#212121",
+    dark: "#263238",
+    grey: "#607D8B",
+    white: "#FAFAFA",
+    brown: "#795548",
+    gold: "#F9A825",
+    maroon: "#880E4F"
+};
+const DEFAULT_COLOR = "#9C27B0";
 
 function tmp(ext) {
     return path.join(
@@ -58,31 +82,6 @@ async function downloadMedia(message, type) {
     return Buffer.concat(chunks);
 }
 
-async function postGroupStatus(sock, jid, content) {
-    const statusSourceType = content.text
-        ? "TEXT"
-        : content.image
-          ? "IMAGE"
-          : content.video
-            ? "VIDEO"
-            : content.audio
-              ? "AUDIO"
-              : content.sticker
-                ? "IMAGE"
-                : "TEXT";
-
-    return sock.sendMessage(jid, {
-        ...content,
-        contextInfo: {
-            ...(content.contextInfo || {}),
-            isGroupStatus: true,
-            statusSourceType,
-            statusAttributions: [{ type: 10 }],
-            statusAudienceMetadata: { audienceType: "ALL" }
-        }
-    });
-}
-
 async function convertToVoiceNote(buffer) {
     const inFile = tmp("in");
     const outFile = tmp("ogg");
@@ -106,7 +105,6 @@ async function convertToVoiceNote(buffer) {
     }
 }
 
-/** Sticker webp → still image for group status (WA often rejects raw sticker) */
 async function stickerToImage(buffer) {
     const inFile = tmp("webp");
     const outFile = tmp("jpg");
@@ -130,19 +128,93 @@ async function stickerToImage(buffer) {
     }
 }
 
+function parseArgs(args) {
+    const colors = [];
+    const rest = [];
+    for (let i = 0; i < (args || []).length; i++) {
+        const a = String(args[i] || "").toLowerCase();
+        if (COLOR_MAP[a]) colors.push(COLOR_MAP[a]);
+        else rest.push(args[i]);
+    }
+    return {
+        color: colors[0] || DEFAULT_COLOR,
+        caption: rest.join(" ").trim()
+    };
+}
+
+/**
+ * Post to GROUP STORY only.
+ * Primary: status@broadcast + statusJidList (does not dump media in chat)
+ * Fallback: isGroupStatus on group jid (DevAfeez style)
+ */
+async function postGroupStatus(sock, groupJid, content, backgroundColor) {
+    const statusSourceType = content.text
+        ? "TEXT"
+        : content.image
+          ? "IMAGE"
+          : content.video
+            ? "VIDEO"
+            : content.audio
+              ? "AUDIO"
+              : content.sticker
+                ? "IMAGE"
+                : "TEXT";
+
+    const payload = { ...content };
+
+    // text background (DaraTech-style)
+    if (payload.text && backgroundColor) {
+        payload.backgroundColor = backgroundColor;
+    }
+
+    // --- Method A: status broadcast targeted at group (preferred: no chat bubble) ---
+    try {
+        await sock.sendMessage(
+            "status@broadcast",
+            {
+                ...payload,
+                contextInfo: {
+                    ...(payload.contextInfo || {}),
+                    isGroupStatus: true,
+                    statusSourceType,
+                    statusAttributions: [{ type: 10 }],
+                    statusAudienceMetadata: { audienceType: "ALL" }
+                }
+            },
+            {
+                statusJidList: [groupJid],
+                backgroundColor: backgroundColor || DEFAULT_COLOR
+            }
+        );
+        return "broadcast";
+    } catch (e1) {
+        console.log("[GCSTATUS] broadcast method failed:", e1.message);
+    }
+
+    // --- Method B: DevAfeez isGroupStatus on group jid ---
+    await sock.sendMessage(groupJid, {
+        ...payload,
+        contextInfo: {
+            ...(payload.contextInfo || {}),
+            isGroupStatus: true,
+            statusSourceType,
+            statusAttributions: [{ type: 10 }],
+            statusAudienceMetadata: { audienceType: "ALL" }
+        }
+    });
+    return "group";
+}
+
 module.exports = {
     name: "status2",
     aliases: ["gcstatus", "gstatus", "groupstatus"],
 
-    run: async function ({ sock, from, message, args, reply, isOwner, isPrivileged }) {
+    run: async function ({ sock, from, message, args, reply }) {
         if (!from.endsWith("@g.us")) {
             return reply("❌ Group only.");
         }
 
-        // optional: only admin/owner — remove if everyone can post
-        // if (!isPrivileged) return reply("❌ Owner/sudo only.");
-
-        const caption = (args || []).join(" ").trim();
+        const { color, caption } = parseArgs(args);
 
         const ctx =
             message.message?.extendedTextMessage?.contextInfo ||
@@ -152,28 +224,36 @@ module.exports = {
 
         const quotedMessage = ctx.quotedMessage || null;
 
-        // ── Text only
+        // ── TEXT ONLY ─────────────────────────────────────
         if (!quotedMessage) {
             if (!caption) {
                 return reply(
 `╭━━〔 📢 VENOM X GC STATUS 〕━━⬣
 
 Reply to image / video / audio / sticker:
-#gcstatus [caption]
+*#gcstatus* [caption] [color]
 
-Text only:
-#gcstatus Your text here
+Text story:
+*#gcstatus* Your text here purple
+
+Colors: purple pink red blue green gold black …
+
+⚠️ Media is posted to *group story only*
+— not re-sent in the chat.
 
 ╰━━━━━━━━━━━━━━━━⬣`
                 );
             }
 
             try {
-                await reply("⏳ Posting text group status...");
-                await postGroupStatus(sock, from, {
-                    text: caption,
-                    backgroundColor: PURPLE
-                });
+                await reply("⏳ Posting text group story…");
+                await postGroupStatus(
+                    sock,
+                    from,
+                    { text: caption },
+                    color
+                );
+                // text ACK only — never the story body again as media
                 return reply("✅ Text group story posted.");
             } catch (err) {
                 console.error("[GCSTATUS] text:", err);
@@ -181,6 +261,7 @@ Text only:
             }
         }
 
+        // ── QUOTED MEDIA ──────────────────────────────────
         const mediaPayload = unwrapQuotedMessage(quotedMessage);
         const mediaType = detectMediaType(mediaPayload);
 
@@ -188,38 +269,42 @@ Text only:
             return reply("❌ Reply to an image, video, audio, or sticker.");
         }
 
-        await reply("⏳ Preparing *" + mediaType + "* group status...");
+        // ACK only — do NOT send the image/video into the group
+        await reply("⏳ Preparing *" + mediaType + "* group story…");
 
         try {
             const buffer = await downloadMedia(mediaPayload, mediaType);
             if (!buffer || !buffer.length) throw new Error("Empty download");
 
+            let content;
+
             if (mediaType === "audio") {
                 const voice = await convertToVoiceNote(buffer);
-                await postGroupStatus(sock, from, {
+                content = {
                     audio: voice,
                     mimetype: "audio/ogg; codecs=opus",
                     ptt: true
-                });
+                };
             } else if (mediaType === "sticker") {
-                // try sticker first, then image fallback
                 try {
-                    await postGroupStatus(sock, from, { sticker: buffer });
-                } catch (e1) {
-                    console.log("[GCSTATUS] sticker raw failed, trying image:", e1.message);
+                    content = { sticker: buffer };
+                    await postGroupStatus(sock, from, content, color);
+                    return reply("✅ Sticker group story posted.");
+                } catch (e) {
+                    console.log("[GCSTATUS] sticker failed, image fallback:", e.message);
                     const img = await stickerToImage(buffer);
-                    await postGroupStatus(sock, from, {
-                        image: img,
-                        caption: caption || ""
-                    });
+                    content = { image: img, caption: caption || "" };
                 }
             } else {
-                await postGroupStatus(sock, from, {
+                content = {
                     [mediaType]: buffer,
                     caption: caption || ""
-                });
+                };
             }
 
+            await postGroupStatus(sock, from, content, color);
+
+            // success text only — media never sent as normal group message
             return reply(
                 "✅ *" +
                     mediaType.charAt(0).toUpperCase() +
@@ -228,7 +313,7 @@ Text only:
             );
         } catch (err) {
             console.error("[GCSTATUS] " + mediaType + ":", err);
-            return reply("❌ Failed to post " + mediaType + ": " + (err.message || err));
+            return reply("❌ Failed: " + (err.message || err));
         }
     }
 };
