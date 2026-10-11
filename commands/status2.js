@@ -1,3 +1,7 @@
+/**
+ * VENOM X - Group Status
+ * Story ONLY — never sends image/video/audio/sticker into the group chat
+ */
 "use strict";
 
 const fs = require("fs");
@@ -59,7 +63,7 @@ function unwrapQuotedMessage(message) {
 
 async function downloadMedia(message, type) {
     const mediaMessage = message[type + "Message"];
-    if (!mediaMessage) throw new Error("Missing " + type + " payload");
+    if (!mediaMessage) throw new Error("Missing " + type);
     const stream = await downloadContentFromMessage(mediaMessage, type);
     const chunks = [];
     for await (const chunk of stream) chunks.push(chunk);
@@ -144,7 +148,11 @@ function parseArgs(args) {
     return { color: color, targets: targets, caption: rest.join(" ").trim() };
 }
 
-async function postGroupStatus(sock, jid, content, backgroundColor) {
+/**
+ * ONLY posts to group STATUS / story.
+ * Never sendMessage(groupJid, { image/video/... }) — that dumps media in chat.
+ */
+async function postGroupStatus(sock, groupJid, content, backgroundColor) {
     const statusSourceType = content.text
         ? "TEXT"
         : content.image ? "IMAGE"
@@ -154,41 +162,41 @@ async function postGroupStatus(sock, jid, content, backgroundColor) {
         : "TEXT";
 
     const body = { ...content };
+    const bg = backgroundColor || DEFAULT_COLOR;
+
     if (body.text) {
-        body.backgroundColor = hexToArgb(backgroundColor || DEFAULT_COLOR);
+        body.backgroundColor = hexToArgb(bg);
         body.font = 0;
     }
 
-    return sock.sendMessage(jid, {
-        ...body,
-        contextInfo: {
-            isGroupStatus: true,
-            statusSourceType: statusSourceType,
-            statusAttributions: [{ type: 10 }],
-            statusAudienceMetadata: { audienceType: "ALL" }
+    // Primary: status broadcast targeted at this group only
+    await sock.sendMessage(
+        "status@broadcast",
+        {
+            ...body,
+            contextInfo: {
+                isGroupStatus: true,
+                statusSourceType: statusSourceType,
+                statusAttributions: [{ type: 10 }],
+                statusAudienceMetadata: { audienceType: "ALL" }
+            }
+        },
+        {
+            statusJidList: [groupJid],
+            backgroundColor: typeof bg === "string" ? hexToArgb(bg) : bg
         }
-    });
+    );
 }
 
 function helpText() {
     return (
 `╭━━〔 📢 VENOM X GC STATUS 〕━━⬣
 
-*List groups*
 #gcstatus list
-
-*Text (this group)*
 #gcstatus Hello purple
+#gcstatus 1 Hello blue
+Reply media + #gcstatus [caption] [color]
 
-*Text to group #*
-#gcstatus 1 Hello
-#gcstatus 1 3 Hello gold
-
-*Media*
-Reply + #gcstatus [caption] [color]
-#gcstatus 1 2 caption blue
-
-Colors: purple pink red blue green gold black …
 
 ╰━━━━━━━━━━━━━━━━⬣`
     );
@@ -247,7 +255,7 @@ module.exports = {
             }
         } else {
             if (!from.endsWith("@g.us")) {
-                return reply("❌ Use in a group, or: #gcstatus list → #gcstatus 1 Hello");
+                return reply("❌ Use in a group, or #gcstatus list → #gcstatus 1 Hello");
             }
             targetJids = [from];
         }
@@ -262,7 +270,9 @@ module.exports = {
             const mediaType = detectMediaType(mediaPayload);
             if (!mediaType) return reply("❌ Reply to image, video, audio, or sticker.");
 
-            await reply("⏳ Preparing *" + mediaType + "*…");
+            // TEXT only in chat — not the media
+            await reply("⏳ Uploading *" + mediaType + "* to group story…");
+
             const buffer = await downloadMedia(mediaPayload, mediaType);
             if (!buffer || !buffer.length) throw new Error("Empty download");
 
@@ -273,13 +283,18 @@ module.exports = {
                     ptt: true
                 };
             } else if (mediaType === "sticker") {
-                content = { sticker: buffer };
+                try {
+                    content = { sticker: buffer };
+                } catch (e) {
+                    content = { image: await stickerToImage(buffer), caption: caption || "" };
+                }
             } else {
                 content = { [mediaType]: buffer, caption: caption || "" };
             }
         }
 
-        await reply("🚀 Posting to *" + targetJids.length + "* group(s)…");
+        // TEXT progress only
+        await reply("🚀 Story upload · *" + targetJids.length + "* group(s)…");
 
         let ok = 0;
         let fail = 0;
@@ -287,12 +302,17 @@ module.exports = {
         for (let i = 0; i < targetJids.length; i++) {
             const jid = targetJids[i];
             try {
-                if (content.sticker && !content.image && !content.video && !content.audio && !content.text) {
+                if (content.sticker) {
                     try {
                         await postGroupStatus(sock, jid, content, color);
                     } catch (e1) {
                         const img = await stickerToImage(content.sticker);
-                        await postGroupStatus(sock, jid, { image: img, caption: caption || "" }, color);
+                        await postGroupStatus(
+                            sock,
+                            jid,
+                            { image: img, caption: caption || "" },
+                            color
+                        );
                     }
                 } else {
                     await postGroupStatus(sock, jid, content, color);
@@ -307,11 +327,12 @@ module.exports = {
             }
         }
 
+        // TEXT result only — never media
         return reply(
 `╭━━〔 ✅ GC STATUS 〕━━⬣
+┃ Story only (not in chat)
 ┃ Success : *${ok}*
 ┃ Failed  : *${fail}*
-┃ Total   : *${targetJids.length}*
 ╰━━━━━━━━━━━━━━━━⬣`
         );
     }
