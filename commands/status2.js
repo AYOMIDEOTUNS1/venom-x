@@ -1,6 +1,6 @@
 /**
  * VENOM X - Group Status
- * Story ONLY — never sends image/video/audio/sticker into the group chat
+ * Posts to group story, then deletes the chat bubble (media not left in chat)
  */
 "use strict";
 
@@ -148,9 +148,20 @@ function parseArgs(args) {
     return { color: color, targets: targets, caption: rest.join(" ").trim() };
 }
 
+async function tryDeleteChatBubble(sock, jid, sent) {
+    try {
+        const key = sent && sent.key;
+        if (!key) return;
+        await new Promise(function (r) { setTimeout(r, 800); });
+        await sock.sendMessage(jid, { delete: key });
+    } catch (e) {
+        console.log("[GCSTATUS] delete bubble:", e.message);
+    }
+}
+
 /**
- * ONLY posts to group STATUS / story.
- * Never sendMessage(groupJid, { image/video/... }) — that dumps media in chat.
+ * 1) Group JID + isGroupStatus → shows on group profile/story
+ * 2) Delete that message from chat → media not left in the group
  */
 async function postGroupStatus(sock, groupJid, content, backgroundColor) {
     const statusSourceType = content.text
@@ -163,29 +174,28 @@ async function postGroupStatus(sock, groupJid, content, backgroundColor) {
 
     const body = { ...content };
     const bg = backgroundColor || DEFAULT_COLOR;
-
     if (body.text) {
         body.backgroundColor = hexToArgb(bg);
         body.font = 0;
     }
 
-    // Primary: status broadcast targeted at this group only
-    await sock.sendMessage(
-        "status@broadcast",
-        {
-            ...body,
-            contextInfo: {
-                isGroupStatus: true,
-                statusSourceType: statusSourceType,
-                statusAttributions: [{ type: 10 }],
-                statusAudienceMetadata: { audienceType: "ALL" }
-            }
-        },
-        {
-            statusJidList: [groupJid],
-            backgroundColor: typeof bg === "string" ? hexToArgb(bg) : bg
+    const payload = {
+        ...body,
+        contextInfo: {
+            isGroupStatus: true,
+            statusSourceType: statusSourceType,
+            statusAttributions: [{ type: 10 }],
+            statusAudienceMetadata: { audienceType: "ALL" }
         }
-    );
+    };
+
+    // Method A: group jid (works for group profile)
+    const sent = await sock.sendMessage(groupJid, payload);
+
+    // Remove chat bubble so media doesn't stay in the group
+    await tryDeleteChatBubble(sock, groupJid, sent);
+
+    return sent;
 }
 
 function helpText() {
@@ -197,6 +207,8 @@ function helpText() {
 #gcstatus 1 Hello blue
 Reply media + #gcstatus [caption] [color]
 
+Story goes to *group profile*
+Chat bubble is *auto-deleted*
 
 ╰━━━━━━━━━━━━━━━━⬣`
     );
@@ -270,7 +282,6 @@ module.exports = {
             const mediaType = detectMediaType(mediaPayload);
             if (!mediaType) return reply("❌ Reply to image, video, audio, or sticker.");
 
-            // TEXT only in chat — not the media
             await reply("⏳ Uploading *" + mediaType + "* to group story…");
 
             const buffer = await downloadMedia(mediaPayload, mediaType);
@@ -283,18 +294,13 @@ module.exports = {
                     ptt: true
                 };
             } else if (mediaType === "sticker") {
-                try {
-                    content = { sticker: buffer };
-                } catch (e) {
-                    content = { image: await stickerToImage(buffer), caption: caption || "" };
-                }
+                content = { sticker: buffer };
             } else {
                 content = { [mediaType]: buffer, caption: caption || "" };
             }
         }
 
-        // TEXT progress only
-        await reply("🚀 Story upload · *" + targetJids.length + "* group(s)…");
+        await reply("🚀 Group story · *" + targetJids.length + "* group(s)…");
 
         let ok = 0;
         let fail = 0;
@@ -327,10 +333,10 @@ module.exports = {
             }
         }
 
-        // TEXT result only — never media
         return reply(
 `╭━━〔 ✅ GC STATUS 〕━━⬣
-┃ Story only (not in chat)
+┃ Group story posted
+┃ Chat media auto-removed
 ┃ Success : *${ok}*
 ┃ Failed  : *${fail}*
 ╰━━━━━━━━━━━━━━━━⬣`
