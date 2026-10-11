@@ -1,13 +1,17 @@
 "use strict";
 
 const { downloadMediaMessage } = require("@whiskeysockets/baileys");
-const { getStickerHistory, removeStickerHistory } = require("../lib/stickerHistory");
+const {
+    getStickerHistory,
+    removeStickerHistory
+} = require("../lib/stickerHistory");
 const { addExif, PACK_NAME, AUTHOR_NAME } = require("../lib/stickerExif");
-const { PACK_HARD_LIMIT, sendNativeStickerPack } = require("../lib/nativeStickerPack");
 
-function getStickerMessage(message) {
-    let current = message && message.message;
-    for (let i = 0; i < 4 && current; i++) {
+const MAX = 30;
+
+function pickStickerMsg(stored) {
+    let current = stored && stored.message;
+    for (let i = 0; i < 5 && current; i++) {
         if (current.stickerMessage) return current.stickerMessage;
         if (current.ephemeralMessage && current.ephemeralMessage.message) {
             current = current.ephemeralMessage.message;
@@ -35,100 +39,102 @@ module.exports = {
         let author = AUTHOR_NAME;
         const raw = (args || []).join(" ").trim();
         if (raw.includes("|")) {
-            const parts = raw.split("|");
-            pack = (parts[0] || "").trim() || PACK_NAME;
-            author = (parts[1] || "").trim() || AUTHOR_NAME;
+            const p = raw.split("|");
+            pack = (p[0] || "").trim() || PACK_NAME;
+            author = (p[1] || "").trim() || AUTHOR_NAME;
         } else if (raw) {
             pack = raw;
         }
 
-        const history = getStickerHistory(from) || [];
+        let history = [];
+        try {
+            history = getStickerHistory(from) || [];
+        } catch (e) {
+            console.log("[TAKEALL] history:", e.message);
+        }
+
         if (!history.length) {
             return reply(
 `╭━━〔 📦 TAKEALL 〕━━⬣
 
-No saved stickers in this chat yet.
+No stickers saved in this chat yet.
 
-Send stickers here first, then:
+Send some stickers here first, then:
 #takeall
-#takeall MyPack | MyName
+#takeall ${PACK_NAME} | ${AUTHOR_NAME}
 
-Default: *\( {PACK_NAME}* · * \){AUTHOR_NAME}*
 ╰━━━━━━━━━━━━━━━━⬣`
             );
         }
 
-        const limit = Math.min(history.length, PACK_HARD_LIMIT);
-        await reply(
-            "⏳ Building pack *" + pack + "* from " + limit + " sticker(s)…"
-        );
+        const slice = history.slice(-MAX);
+        await reply("⏳ Packing *" + slice.length + "* sticker(s) as *" + pack + "*…");
 
-        const buffers = [];
+        const out = [];
         const usedKeys = [];
         const seen = new Set();
 
-        for (let i = 0; i < history.length && buffers.length < limit; i++) {
-            const item = history[i];
+        for (let i = 0; i < slice.length; i++) {
+            const item = slice[i];
             try {
-                const stickerMsg = getStickerMessage(item);
-                if (!stickerMsg) continue;
+                const sm = pickStickerMsg(item);
+                if (!sm) continue;
 
-                // dedupe by file sha if present
-                const sha = stickerMsg.fileSha256
-                    ? Buffer.from(stickerMsg.fileSha256).toString("hex")
+                const sha = sm.fileSha256
+                    ? Buffer.from(sm.fileSha256).toString("hex")
                     : null;
-                if (sha && seen.has(sha)) continue;
-                if (sha) seen.add(sha);
+                if (sha) {
+                    if (seen.has(sha)) continue;
+                    seen.add(sha);
+                }
 
-                const media = await downloadMediaMessage(
-                    {
-                        key: item.key,
-                        message: item.message
-                    },
+                const buf = await downloadMediaMessage(
+                    { key: item.key, message: item.message },
                     "buffer",
                     {}
                 );
+                if (!buf || buf.length < 50) continue;
 
-                if (!media || media.length < 100) continue;
-
-                // FORCE your pack name on every sticker
-                const branded = await addExif(media, pack, author);
-                buffers.push(branded);
+                out.push(await addExif(buf, pack, author));
                 if (item.key) usedKeys.push(item.key);
             } catch (e) {
                 console.log("[TAKEALL] skip:", e.message);
             }
         }
 
-        if (!buffers.length) {
-            return reply("❌ Could not download any stickers from history.");
+        if (!out.length) {
+            return reply("❌ Could not download stickers. Send fresh stickers and try again.");
+        }
+
+        let sent = 0;
+        for (let i = 0; i < out.length; i++) {
+            try {
+                await sock.sendMessage(
+                    from,
+                    { sticker: out[i] },
+                    { quoted: i === 0 ? message : undefined }
+                );
+                sent++;
+                if (i < out.length - 1) {
+                    await new Promise(function (r) { setTimeout(r, 450); });
+                }
+            } catch (e) {
+                console.log("[TAKEALL] send fail:", e.message);
+            }
         }
 
         try {
-            const result = await sendNativeStickerPack(sock, from, buffers, {
-                packName: pack,
-                publisher: author,
-                quoted: message
-            });
+            if (usedKeys.length) removeStickerHistory(from, usedKeys);
+        } catch (e) {}
 
-            // clear used from history so next takeall is fresh (optional)
-            try {
-                if (usedKeys.length) removeStickerHistory(from, usedKeys);
-            } catch (e) {}
-
-            return reply(
-`╭━━〔 ✅ STICKER PACK 〕━━⬣
+        return reply(
+`╭━━〔 ✅ TAKEALL 〕━━⬣
 
 Pack : *${pack}*
 Author : *${author}*
-Stickers : *${result.count}*
-Mode : *${result.mode}*
+Sent : *${sent}* / ${out.length}
 
 ╰━━━━━━━━━━━━━━━━⬣`
-            );
-        } catch (err) {
-            console.error("[TAKEALL]", err);
-            return reply("❌ Pack failed: " + (err.message || err));
-        }
+        );
     }
 };

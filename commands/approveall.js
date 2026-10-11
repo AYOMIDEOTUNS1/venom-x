@@ -70,7 +70,7 @@ module.exports = {
             return reply(
                 "❌ Failed to approve requests:\n" +
                     (err.message || err) +
-                    "\n\nMake sure the *bot is admin* and the group uses *admin approval*."
+                    "\n\nMake sure the *bot is admin*."
             );
         }
     }

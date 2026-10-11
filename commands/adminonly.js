@@ -11,7 +11,6 @@ module.exports = {
 
         const mode = String((args && args[0]) || "status").toLowerCase();
 
-        // only group admins / owner / sudo can toggle
         let isAdmin = isPrivileged || isOwner || isSudo;
         if (!isAdmin) {
             try {

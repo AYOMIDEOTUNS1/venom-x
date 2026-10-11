@@ -11,39 +11,27 @@ module.exports = function (sock) {
     }
 
     const commands = new Map();
-
-    if (!global.processedMessages) {
-        global.processedMessages = new Set();
-    }
+    if (!global.processedMessages) global.processedMessages = new Set();
 
     function loadCommands() {
         commands.clear();
-
         const folder = path.join(__dirname, "../commands");
         if (!fs.existsSync(folder)) {
             console.log("⚠️ Commands folder not found");
             return;
         }
-
         const files = fs.readdirSync(folder).filter(function (f) {
             return f.slice(-3) === ".js";
         });
-
         for (let i = 0; i < files.length; i++) {
             const file = files[i];
             try {
                 const fullPath = path.join(folder, file);
                 delete require.cache[require.resolve(fullPath)];
                 const command = require(fullPath);
-
-                if (!command || typeof command !== "object") {
-                    console.log("⚠️ Invalid command: " + file);
-                    continue;
-                }
-
+                if (!command || typeof command !== "object") continue;
                 const name = file.replace(".js", "").toLowerCase();
                 commands.set(name, command);
-
                 if (Array.isArray(command.aliases)) {
                     for (let a = 0; a < command.aliases.length; a++) {
                         const alias = String(command.aliases[a] || "").toLowerCase();
@@ -54,7 +42,6 @@ module.exports = function (sock) {
                 console.log("⚠️ Failed to load " + file + ":", err.message);
             }
         }
-
         console.log("📦 Loaded " + commands.size + " command keys");
     }
 
@@ -63,56 +50,20 @@ module.exports = function (sock) {
     function extractBody(msg) {
         try {
             const m = msg.message || {};
-
             if (m.conversation) return m.conversation;
-            if (m.extendedTextMessage && m.extendedTextMessage.text) {
-                return m.extendedTextMessage.text;
-            }
-            if (m.imageMessage && m.imageMessage.caption) {
-                return m.imageMessage.caption;
-            }
-            if (m.videoMessage && m.videoMessage.caption) {
-                return m.videoMessage.caption;
-            }
-            if (m.documentMessage && m.documentMessage.caption) {
-                return m.documentMessage.caption;
-            }
+            if (m.extendedTextMessage && m.extendedTextMessage.text) return m.extendedTextMessage.text;
+            if (m.imageMessage && m.imageMessage.caption) return m.imageMessage.caption;
+            if (m.videoMessage && m.videoMessage.caption) return m.videoMessage.caption;
+            if (m.documentMessage && m.documentMessage.caption) return m.documentMessage.caption;
             if (m.buttonsResponseMessage) {
-                return (
-                    m.buttonsResponseMessage.selectedDisplayText ||
-                    m.buttonsResponseMessage.selectedButtonId ||
-                    ""
-                );
+                return m.buttonsResponseMessage.selectedDisplayText || m.buttonsResponseMessage.selectedButtonId || "";
             }
             if (m.listResponseMessage) {
                 const s = m.listResponseMessage.singleSelectReply;
-                return (
-                    (s && s.selectedRowId) ||
-                    m.listResponseMessage.title ||
-                    ""
-                );
+                return (s && s.selectedRowId) || m.listResponseMessage.title || "";
             }
             if (m.templateButtonReplyMessage) {
-                return (
-                    m.templateButtonReplyMessage.selectedId ||
-                    m.templateButtonReplyMessage.selectedDisplayText ||
-                    ""
-                );
-            }
-            if (
-                m.interactiveResponseMessage &&
-                m.interactiveResponseMessage.nativeFlowResponseMessage
-            ) {
-                try {
-                    const params =
-                        m.interactiveResponseMessage.nativeFlowResponseMessage
-                            .paramsJson;
-                    if (params) {
-                        const parsed = JSON.parse(params);
-                        if (parsed.id) return String(parsed.id);
-                        if (parsed.selectedId) return String(parsed.selectedId);
-                    }
-                } catch (e) {}
+                return m.templateButtonReplyMessage.selectedId || m.templateButtonReplyMessage.selectedDisplayText || "";
             }
             return "";
         } catch (e) {
@@ -131,17 +82,11 @@ module.exports = function (sock) {
         const list = [];
         if (settings.owner) {
             if (Array.isArray(settings.owner)) {
-                for (let i = 0; i < settings.owner.length; i++) {
-                    list.push(normalizeId(settings.owner[i]));
-                }
-            } else {
-                list.push(normalizeId(settings.owner));
-            }
+                for (let i = 0; i < settings.owner.length; i++) list.push(normalizeId(settings.owner[i]));
+            } else list.push(normalizeId(settings.owner));
         }
         if (settings.ownerNumber) list.push(normalizeId(settings.ownerNumber));
-        if (process.env.OWNER_NUMBER) {
-            list.push(normalizeId(process.env.OWNER_NUMBER));
-        }
+        if (process.env.OWNER_NUMBER) list.push(normalizeId(process.env.OWNER_NUMBER));
         return list.filter(Boolean);
     }
 
@@ -149,8 +94,7 @@ module.exports = function (sock) {
         try {
             const sudoPath = path.join(__dirname, "../database/sudo.json");
             if (!fs.existsSync(sudoPath)) return false;
-            const raw = fs.readFileSync(sudoPath, "utf8");
-            const data = JSON.parse(raw || "[]");
+            const data = JSON.parse(fs.readFileSync(sudoPath, "utf8") || "[]");
             const id = normalizeId(sender);
             if (Array.isArray(data)) {
                 return data.some(function (x) {
@@ -158,10 +102,29 @@ module.exports = function (sock) {
                     return n && (n === id || String(x).includes(id) || id.includes(n));
                 });
             }
-            if (data && typeof data === "object") {
-                return !!(data[id] || data[sender]);
-            }
+            if (data && typeof data === "object") return !!(data[id] || data[sender]);
         } catch (e) {}
+        return false;
+    }
+
+    function messageHasSticker(msg) {
+        let current = msg && msg.message;
+        for (let i = 0; i < 5 && current; i++) {
+            if (current.stickerMessage) return true;
+            if (current.ephemeralMessage && current.ephemeralMessage.message) {
+                current = current.ephemeralMessage.message;
+                continue;
+            }
+            if (current.viewOnceMessage && current.viewOnceMessage.message) {
+                current = current.viewOnceMessage.message;
+                continue;
+            }
+            if (current.viewOnceMessageV2 && current.viewOnceMessageV2.message) {
+                current = current.viewOnceMessageV2.message;
+                continue;
+            }
+            break;
+        }
         return false;
     }
 
@@ -169,7 +132,6 @@ module.exports = function (sock) {
         try {
             const messages = chatUpdate.messages || [];
             if (!messages.length) return;
-
             const msg = messages[0];
             if (!msg || !msg.message || !msg.key) return;
             if (msg.key.remoteJid === "status@broadcast") return;
@@ -178,82 +140,55 @@ module.exports = function (sock) {
             if (mid) {
                 if (global.processedMessages.has(mid)) return;
                 global.processedMessages.add(mid);
-                if (global.processedMessages.size > 1000) {
-                    global.processedMessages.clear();
-                }
+                if (global.processedMessages.size > 1000) global.processedMessages.clear();
             }
 
             const from = msg.key.remoteJid;
             const isGroup = !!(from && from.endsWith("@g.us"));
-
-            let sender = isGroup
-                ? msg.key.participant || msg.participant || from
-                : from;
-
-            const senderPn =
-                msg.key.participantPn ||
-                msg.key.remoteJidAlt ||
-                sender;
+            const sender = isGroup ? msg.key.participant || msg.participant || from : from;
+            const senderPn = msg.key.participantPn || msg.key.remoteJidAlt || sender;
             const participantPn = msg.key.participantPn || senderPn;
 
             const settings = getSettings() || {};
             const prefix = settings.prefix || "#";
-
             const owners = getOwnerList(settings);
             const senderNorm = normalizeId(sender);
             const senderPnNorm = normalizeId(senderPn);
 
             const isOwner =
                 owners.some(function (o) {
-                    return (
-                        senderNorm.includes(o) ||
-                        senderPnNorm.includes(o) ||
-                        o.includes(senderNorm)
-                    );
+                    return senderNorm.includes(o) || senderPnNorm.includes(o) || o.includes(senderNorm);
                 }) || msg.key.fromMe === true;
 
-            const isSudo =
-                isSudoUser(sender) || isSudoUser(senderPn);
+            const isSudo = isSudoUser(sender) || isSudoUser(senderPn);
             const isPrivileged = isOwner || isSudo;
 
-            // ---------- STICKER HISTORY (only this path for #takeall) ----------
-            // Do NOT use lib/stickerCollector here — takeall uses lib/stickerHistory only.
-            if (isGroup && !msg.key.fromMe) {
+            // sticker history for #takeall
+            if (isGroup && !msg.key.fromMe && messageHasSticker(msg)) {
                 try {
-                    const {
-                        recordStickerMessage
-                    } = require("../lib/stickerHistory");
-                    recordStickerMessage(msg);
+                    const { recordStickerMessage } = require("../lib/stickerHistory");
+                    try {
+                        recordStickerMessage(msg);
+                    } catch (e1) {
+                        recordStickerMessage(from, msg);
+                    }
                 } catch (e) {}
             }
 
-            let body = extractBody(msg);
-            body = String(body || "").trim();
+            let body = String(extractBody(msg) || "").trim();
             if (!body) return;
 
             if (settings.sleep === true && !isPrivileged) return;
-
-            if (
-                String(settings.mode || "public").toLowerCase() === "private" &&
-                !isPrivileged
-            ) {
-                return;
-            }
+            if (String(settings.mode || "public").toLowerCase() === "private" && !isPrivileged) return;
 
             try {
                 const banlist = require("../lib/banlist");
                 if (!isPrivileged && typeof banlist.isBanned === "function") {
-                    if (
-                        banlist.isBanned(sender) ||
-                        banlist.isBanned(senderPn)
-                    ) {
-                        return;
-                    }
+                    if (banlist.isBanned(sender) || banlist.isBanned(senderPn)) return;
                 }
             } catch (e) {}
 
             if (!body.startsWith(prefix)) return;
-
             const withoutPrefix = body.slice(prefix.length).trim();
             if (!withoutPrefix) return;
 
@@ -261,7 +196,7 @@ module.exports = function (sock) {
             const commandName = String(parts[0] || "").toLowerCase();
             const args = parts.slice(1);
 
-            // ── Group admin-only mode (#adminonly) ─────────────────
+            // ── #adminonly gate ─────────────────────────────
             if (isGroup && from.endsWith("@g.us")) {
                 try {
                     const groupMode = require("../lib/groupMode");
@@ -273,29 +208,18 @@ module.exports = function (sock) {
                             commandName === "admonly";
 
                         let isAdmin = isPrivileged;
-
                         if (!isAdmin && !allowCmd) {
                             try {
                                 const meta = await sock.groupMetadata(from);
                                 const p = (meta.participants || []).find(function (x) {
                                     const id = x.id || x.jid || "";
-                                    return (
-                                        id === sender ||
-                                        id.split("@")[0] === String(sender).split("@")[0]
-                                    );
+                                    return id === sender || id.split("@")[0] === String(sender).split("@")[0];
                                 });
-
                                 const rank = p && (p.admin || p.isAdmin || p.isSuperAdmin);
-                                isAdmin =
-                                    rank === "admin" ||
-                                    rank === "superadmin" ||
-                                    rank === true;
+                                isAdmin = rank === "admin" || rank === "superadmin" || rank === true;
                             } catch (e) {}
                         }
-
-                        if (!isAdmin && !allowCmd) {
-                            return;
-                        }
+                        if (!isAdmin && !allowCmd) return;
                     }
                 } catch (e) {}
             }
@@ -304,23 +228,16 @@ module.exports = function (sock) {
             if (!command || typeof command.run !== "function") return;
 
             const reply = async function (text) {
-                return sock.sendMessage(
-                    from,
-                    { text: String(text) },
-                    { quoted: msg }
-                );
+                return sock.sendMessage(from, { text: String(text) }, { quoted: msg });
             };
 
             async function setReact(emoji) {
                 try {
-                    await sock.sendMessage(from, {
-                        react: { text: emoji, key: msg.key }
-                    });
+                    await sock.sendMessage(from, { react: { text: emoji, key: msg.key } });
                 } catch (e) {}
             }
 
             await setReact("⏳");
-
             console.log("🚀 RUNNING COMMAND:", commandName);
             const start = Date.now();
 
@@ -332,7 +249,7 @@ module.exports = function (sock) {
                     senderPn: senderPn,
                     participantPn: participantPn,
                     isGroup: isGroup,
-                    isOwner: isPrivileged,
+                    isOwner: isOwner,
                     isSudo: isSudo,
                     isPrivileged: isPrivileged,
                     args: args,
@@ -342,46 +259,22 @@ module.exports = function (sock) {
                     message: msg,
                     reply: reply
                 });
-
                 await setReact("✅");
-                console.log(
-                    "✅ " +
-                        commandName +
-                        " finished in " +
-                        (Date.now() - start) +
-                        "ms"
-                );
+                console.log("✅ " + commandName + " finished in " + (Date.now() - start) + "ms");
             } catch (err) {
-                console.log(
-                    "❌ Command Error [" + commandName + "]:",
-                    err && err.message ? err.message : err
-                );
-
+                console.log("❌ Command Error [" + commandName + "]:", err && err.message ? err.message : err);
                 await setReact("❌");
-
-                const errText = String(
-                    (err && err.message) || err || "Unknown error"
-                ).slice(0, 280);
-
                 await sock
                     .sendMessage(
                         from,
                         {
                             text:
-"╭━━〔 ❌ VENOM ERROR 〕━━⬣\n" +
-"┃\n" +
-"┃ Command: *" +
-prefix +
-commandName +
-"*\n" +
-"┃\n" +
-"┃ " +
-errText +
-"\n" +
-"┃\n" +
-"┃ Try again or use another cmd.\n" +
-"┃\n" +
-"╰━━━━━━━━━━━━━━━━⬣"
+                                "╭━━〔 ❌ VENOM ERROR 〕━━⬣\n┃\n┃ Command: *" +
+                                prefix +
+                                commandName +
+                                "*\n┃\n┃ " +
+                                String((err && err.message) || err || "Unknown").slice(0, 280) +
+                                "\n┃\n╰━━━━━━━━━━━━━━━━⬣"
                         },
                         { quoted: msg }
                     )
