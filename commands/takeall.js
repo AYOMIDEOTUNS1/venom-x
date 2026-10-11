@@ -1,24 +1,13 @@
-'use strict';
+"use strict";
 
-const crypto = require('crypto');
-const { downloadMediaMessage } = require('@whiskeysockets/baileys');
-const {
-    getStickerHistory,
-    removeStickerHistory
-} = require('../lib/stickerHistory');
-const {
-    PACK_HARD_LIMIT,
-    sendNativeStickerPack
-} = require('../lib/nativeStickerPack');
-
-const DEFAULT_BATCH_SIZE = 30;
-const LARGE_BATCH_SIZE = 60;
-const PACK_NAME = 'VENOM X';
-const AUTHOR_NAME = '⸸𝕍ΞȠØ𝕄⸸';
+const { downloadMediaMessage } = require("@whiskeysockets/baileys");
+const { getStickerHistory, removeStickerHistory } = require("../lib/stickerHistory");
+const { addExif, PACK_NAME, AUTHOR_NAME } = require("../lib/stickerExif");
+const { PACK_HARD_LIMIT, sendNativeStickerPack } = require("../lib/nativeStickerPack");
 
 function getStickerMessage(message) {
     let current = message && message.message;
-    for (let i = 0; i < 4 && current; i += 1) {
+    for (let i = 0; i < 4 && current; i++) {
         if (current.stickerMessage) return current.stickerMessage;
         if (current.ephemeralMessage && current.ephemeralMessage.message) {
             current = current.ephemeralMessage.message;
@@ -37,215 +26,109 @@ function getStickerMessage(message) {
     return null;
 }
 
-function getContentHashFromMessage(stickerMsg) {
-    const sha = stickerMsg && stickerMsg.fileSha256;
-    if (!sha) return null;
-    return Buffer.isBuffer(sha)
-        ? sha.toString('hex')
-        : Buffer.from(sha).toString('hex');
-}
-
-function dedupeStickers(stickers) {
-    const seenHashes = new Set();
-    const unique = [];
-    const duplicateKeys = [];
-
-    for (let i = 0; i < stickers.length; i++) {
-        const storedMessage = stickers[i];
-        const stickerMsg = getStickerMessage(storedMessage);
-        if (!stickerMsg) {
-            unique.push(storedMessage);
-            continue;
-        }
-        const hash = getContentHashFromMessage(stickerMsg);
-        if (hash) {
-            if (seenHashes.has(hash)) {
-                duplicateKeys.push(storedMessage.key || null);
-                continue;
-            }
-            seenHashes.add(hash);
-        }
-        unique.push(storedMessage);
-    }
-    return { unique: unique, duplicateKeys: duplicateKeys };
-}
-
-async function pruneHistory(chatId, keys) {
-    const validKeys = (keys || []).filter(Boolean);
-    if (!validKeys.length) return;
-    try {
-        await removeStickerHistory(chatId, validKeys);
-    } catch (error) {
-        console.error('[takeall] prune:', error.message);
-    }
-}
-
 module.exports = {
-    name: 'takeall',
-    aliases: ['stealall', 'packall', 'stickerdump'],
+    name: "takeall",
+    aliases: ["stickerpack", "packall", "stealall"],
 
-    run: async function ({ sock, from, args, reply, message, isGroup }) {
-        if (!isGroup) return reply('❌ Group only.');
-
-        let requestedBatchSize = null;
-        const opt = args && args[0] ? Number(args[0]) : null;
-        if (args && args[0] && opt !== DEFAULT_BATCH_SIZE && opt !== LARGE_BATCH_SIZE && !Number.isNaN(opt)) {
-            // allow custom pack name if not 30/60
+    run: async function ({ sock, from, message, reply, args }) {
+        let pack = PACK_NAME;
+        let author = AUTHOR_NAME;
+        const raw = (args || []).join(" ").trim();
+        if (raw.includes("|")) {
+            const parts = raw.split("|");
+            pack = (parts[0] || "").trim() || PACK_NAME;
+            author = (parts[1] || "").trim() || AUTHOR_NAME;
+        } else if (raw) {
+            pack = raw;
         }
-        if (opt === DEFAULT_BATCH_SIZE || opt === LARGE_BATCH_SIZE) {
-            requestedBatchSize = opt;
-        }
 
-        const rawStickers = getStickerHistory(from);
-        if (!rawStickers.length) {
+        const history = getStickerHistory(from) || [];
+        if (!history.length) {
             return reply(
-'╭━━〔 📦 VENOM X TAKEALL 〕━━⬣\n' +
-'┃ No stickers seen in this chat yet.\n' +
-'┃ Send stickers here, then:\n' +
-'┃ #takeall\n' +
-'┃ #takeall 30\n' +
-'┃ #takeall 60\n' +
-'╰━━━━━━━━━━━━━━━━⬣'
+`╭━━〔 📦 TAKEALL 〕━━⬣
+
+No saved stickers in this chat yet.
+
+Send stickers here first, then:
+#takeall
+#takeall MyPack | MyName
+
+Default: *\( {PACK_NAME}* · * \){AUTHOR_NAME}*
+╰━━━━━━━━━━━━━━━━⬣`
             );
         }
 
-        const deduped = dedupeStickers(rawStickers);
-        const stickers = deduped.unique;
-        if (deduped.duplicateKeys.length) {
-            await pruneHistory(from, deduped.duplicateKeys);
-        }
-
-        const batchSize =
-            requestedBatchSize ||
-            (stickers.length > DEFAULT_BATCH_SIZE
-                ? LARGE_BATCH_SIZE
-                : DEFAULT_BATCH_SIZE);
-        const totalBatches = Math.ceil(stickers.length / batchSize);
-
+        const limit = Math.min(history.length, PACK_HARD_LIMIT);
         await reply(
-            '📦 Found *' +
-                stickers.length +
-                '* stickers.\n⏳ Building ' +
-                totalBatches +
-                ' pack(s) (' +
-                batchSize +
-                ' max/batch)...\nAuthor: ' +
-                AUTHOR_NAME
+            "⏳ Building pack *" + pack + "* from " + limit + " sticker(s)…"
         );
 
-        let totalSent = 0;
-        let totalFailed = 0;
-        let packsSent = 0;
+        const buffers = [];
+        const usedKeys = [];
+        const seen = new Set();
 
-        for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
-            const batch = stickers.slice(
-                batchIndex * batchSize,
-                (batchIndex + 1) * batchSize
-            );
-            const entries = [];
-            const downloadedHashes = new Set();
-            const postDupKeys = [];
+        for (let i = 0; i < history.length && buffers.length < limit; i++) {
+            const item = history[i];
+            try {
+                const stickerMsg = getStickerMessage(item);
+                if (!stickerMsg) continue;
 
-            for (let i = 0; i < batch.length; i++) {
-                const storedMessage = batch[i];
-                const key = storedMessage.key || null;
-                try {
-                    if (!getStickerMessage(storedMessage)) {
-                        totalFailed++;
-                        continue;
-                    }
-                    const stickerBuffer = await downloadMediaMessage(
-                        storedMessage,
-                        'buffer',
-                        {},
-                        {
-                            reuploadRequest: sock.updateMediaMessage
-                        }
-                    );
-                    if (!stickerBuffer || !stickerBuffer.length) {
-                        totalFailed++;
-                        continue;
-                    }
-                    const hash = crypto
-                        .createHash('sha256')
-                        .update(stickerBuffer)
-                        .digest('hex');
-                    if (downloadedHashes.has(hash)) {
-                        postDupKeys.push(key);
-                        continue;
-                    }
-                    downloadedHashes.add(hash);
-                    entries.push({ buffer: stickerBuffer, key: key });
-                } catch (error) {
-                    totalFailed++;
-                    console.error('[takeall] download:', error.message);
-                }
-            }
+                // dedupe by file sha if present
+                const sha = stickerMsg.fileSha256
+                    ? Buffer.from(stickerMsg.fileSha256).toString("hex")
+                    : null;
+                if (sha && seen.has(sha)) continue;
+                if (sha) seen.add(sha);
 
-            if (postDupKeys.length) await pruneHistory(from, postDupKeys);
-
-            if (!entries.length) {
-                await reply(
-                    '⚠️ Batch ' +
-                        (batchIndex + 1) +
-                        '/' +
-                        totalBatches +
-                        ': nothing downloaded.'
+                const media = await downloadMediaMessage(
+                    {
+                        key: item.key,
+                        message: item.message
+                    },
+                    "buffer",
+                    {}
                 );
-                continue;
-            }
 
-            for (let i = 0; i < entries.length; i += PACK_HARD_LIMIT) {
-                const chunk = entries.slice(i, i + PACK_HARD_LIMIT);
-                const chunkBuffers = chunk.map(function (e) {
-                    return e.buffer;
-                });
-                const packName =
-                    totalBatches === 1
-                        ? PACK_NAME
-                        : PACK_NAME + ' ' + (batchIndex + 1);
+                if (!media || media.length < 100) continue;
 
-                try {
-                    await sendNativeStickerPack(
-                        sock,
-                        from,
-                        chunkBuffers,
-                        packName,
-                        AUTHOR_NAME,
-                        message
-                    );
-                    totalSent += chunkBuffers.length;
-                    packsSent++;
-                    await pruneHistory(
-                        from,
-                        chunk.map(function (e) {
-                            return e.key;
-                        })
-                    );
-                } catch (error) {
-                    totalFailed += chunkBuffers.length;
-                    console.error('[takeall] pack:', error.message);
-                    await reply(
-                        '⚠️ Pack "' + packName + '" failed: ' + error.message
-                    );
-                }
+                // FORCE your pack name on every sticker
+                const branded = await addExif(media, pack, author);
+                buffers.push(branded);
+                if (item.key) usedKeys.push(item.key);
+            } catch (e) {
+                console.log("[TAKEALL] skip:", e.message);
             }
         }
 
-        return reply(
-            totalFailed
-                ? '✅ Done: *' +
-                      totalSent +
-                      '* stickers in *' +
-                      packsSent +
-                      '* pack(s), *' +
-                      totalFailed +
-                      '* failed.'
-                : '✅ Done: *' +
-                      totalSent +
-                      '* stickers in *' +
-                      packsSent +
-                      '* pack(s).'
-        );
+        if (!buffers.length) {
+            return reply("❌ Could not download any stickers from history.");
+        }
+
+        try {
+            const result = await sendNativeStickerPack(sock, from, buffers, {
+                packName: pack,
+                publisher: author,
+                quoted: message
+            });
+
+            // clear used from history so next takeall is fresh (optional)
+            try {
+                if (usedKeys.length) removeStickerHistory(from, usedKeys);
+            } catch (e) {}
+
+            return reply(
+`╭━━〔 ✅ STICKER PACK 〕━━⬣
+
+Pack : *${pack}*
+Author : *${author}*
+Stickers : *${result.count}*
+Mode : *${result.mode}*
+
+╰━━━━━━━━━━━━━━━━⬣`
+            );
+        } catch (err) {
+            console.error("[TAKEALL]", err);
+            return reply("❌ Pack failed: " + (err.message || err));
+        }
     }
 };
