@@ -1,98 +1,39 @@
+"use strict";
 const fs = require("fs");
 const path = require("path");
-
-const dbFile = path.join(__dirname, "..", "database", "antilink.json");
+const DB = path.join(__dirname, "..", "database", "antilink.json");
 
 function load() {
-    const dir = path.dirname(dbFile);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    if (!fs.existsSync(dbFile)) fs.writeFileSync(dbFile, "{}");
     try {
-        const raw = fs.readFileSync(dbFile, "utf8");
-        return raw.trim() ? JSON.parse(raw) : {};
-    } catch {
-        return {};
-    }
+        if (!fs.existsSync(DB)) return {};
+        return JSON.parse(fs.readFileSync(DB, "utf8") || "{}");
+    } catch { return {}; }
 }
-
 function save(db) {
-    fs.writeFileSync(dbFile, JSON.stringify(db, null, 2));
+    const dir = path.dirname(DB);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(DB, JSON.stringify(db, null, 2));
 }
 
 module.exports = {
     name: "antilink",
-    aliases: ["antilink"],
-
-    run: async ({ from, reply, args }) => {
-        if (!from.endsWith("@g.us")) {
-            return reply("❌ This command can only be used in groups.");
-        }
-
+    aliases: ["anti-link"],
+    run: async function ({ from, args, reply }) {
+        if (!from.endsWith("@g.us")) return reply("❌ Groups only.");
+        const mode = String(args[0] || "").toLowerCase();
         const db = load();
-        const mode = String(args?.[0] || "").toLowerCase();
-
         if (mode === "on") {
-            db[from] = { enabled: true, action: "warn" }; // warn by default
+            db[from] = true;
             save(db);
-            return reply(`╭━━〔 🛡️ ANTILINK 〕━━⬣
-┃
-┃ ✅ Antilink *enabled*
-┃
-┃ 🔗 Links will be deleted
-┃ ⚠️ Action: Warning system
-┃
-┃ 1st link → Warning
-┃ 2nd link → Warning
-┃ 3rd link → Kick
-┃
-╰━━━━━━━━━━━━━━━━⬣`);
+            return reply("✅ Antilink *ON* for this group.");
         }
-
         if (mode === "off") {
-            db[from] = { enabled: false };
+            db[from] = false;
             save(db);
-            return reply(`╭━━〔 🛡️ ANTILINK 〕━━⬣
-┃
-┃ ❌ Antilink *disabled*
-┃
-┃ Links are now allowed.
-╰━━━━━━━━━━━━━━━━⬣`);
+            return reply("✅ Antilink *OFF* for this group.");
         }
-
-        if (mode === "kick") {
-            db[from] = { enabled: true, action: "kick" };
-            save(db);
-            return reply(`╭━━〔 🛡️ ANTILINK 〕━━⬣
-┃
-┃ ✅ Antilink enabled
-┃ 🚪 Action set to: *Instant Kick*
-╰━━━━━━━━━━━━━━━━⬣`);
-        }
-
-        if (mode === "warn") {
-            db[from] = { enabled: true, action: "warn" };
-            save(db);
-            return reply(`╭━━〔 🛡️ ANTILINK 〕━━⬣
-┃
-┃ ✅ Antilink enabled
-┃ ⚠️ Action set to: *Warning System*
-╰━━━━━━━━━━━━━━━━⬣`);
-        }
-
-        const status = db[from]?.enabled ? "ON" : "OFF";
-        const action = db[from]?.action || "warn";
-
-        return reply(`╭━━〔 🛡️ ANTILINK 〕━━⬣
-┃
-┃ Status : *${status}*
-┃ Action : *${action}*
-┃
-┃ Usage:
-┃ #antilink on
-┃ #antilink off
-┃ #antilink warn
-┃ #antilink kick
-┃
-╰━━━━━━━━━━━━━━━━⬣`);
+        return reply(
+            "Antilink: *" + (db[from] ? "ON" : "OFF") + "*\nUse: #antilink on | off"
+        );
     }
 };
