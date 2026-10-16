@@ -1,345 +1,642 @@
-/**
- * VENOM X - Group Status
- * Posts to group story, then deletes the chat bubble (media not left in chat)
- */
 "use strict";
+
+/**
+ * VENOM X — Group Status V2
+ * list | multi-group | text/image/video
+ * Posts to Group Status only (not chat media spam)
+ */
 
 const fs = require("fs");
 const path = require("path");
-const os = require("os");
-const crypto = require("crypto");
-const { exec } = require("child_process");
-const { promisify } = require("util");
-const { downloadContentFromMessage } = require("@whiskeysockets/baileys");
+const {
+    downloadMediaMessage,
+    generateWAMessageFromContent,
+    prepareWAMessageMedia,
+    jidNormalizedUser
+} = require("@whiskeysockets/baileys");
+const { getSettings } = require("../lib/settingsCache");
 
-const execAsync = promisify(exec);
-const GROUPS_CACHE_FILE = path.join(__dirname, "../data/gcstatus_list.json");
+const CACHE_FILE = path.join(__dirname, "../data/gcstatus_list.json");
 const CACHE_TTL_MS = 10 * 60 * 1000;
 
 const COLOR_MAP = {
-    purple: "#9C27B0", violet: "#7B1FA2", pink: "#E91E63", hotpink: "#FF4081",
-    red: "#F44336", orange: "#FF5722", amber: "#FF8F00", yellow: "#FFC107",
-    lime: "#8BC34A", green: "#4CAF50", teal: "#009688", cyan: "#00BCD4",
-    blue: "#2196F3", navy: "#1565C0", indigo: "#3F51B5", black: "#212121",
-    dark: "#263238", grey: "#607D8B", white: "#FAFAFA", brown: "#795548",
-    gold: "#F9A825", maroon: "#880E4F"
+    purple: 0xff9c27b0,
+    violet: 0xff7b1fa2,
+    pink: 0xffe91e63,
+    red: 0xfff44336,
+    orange: 0xffff5722,
+    amber: 0xffff8f00,
+    yellow: 0xffffc107,
+    lime: 0xff8bc34a,
+    green: 0xff4caf50,
+    teal: 0xff009688,
+    cyan: 0xff00bcd4,
+    blue: 0xff2196f3,
+    navy: 0xff1565c0,
+    indigo: 0xff3f51b5,
+    black: 0xff212121,
+    dark: 0xff263238,
+    grey: 0xff607d8b,
+    white: 0xfffafafa,
+    brown: 0xff795548,
+    gold: 0xfff9a825,
+    maroon: 0xff880e4f
 };
-const DEFAULT_COLOR = "#9C27B0";
+const DEFAULT_BG = 0xff9c27b0;
 
-function tmp(ext) {
-    return path.join(os.tmpdir(), "venom_gs_" + crypto.randomBytes(6).toString("hex") + "." + ext);
-}
-
-function hexToArgb(hex) {
-    let h = String(hex || "").replace("#", "").trim();
-    if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
-    if (h.length !== 6) h = "9C27B0";
-    return (0xff000000 | parseInt(h, 16)) >>> 0;
-}
-
-function detectMediaType(message) {
-    if (!message || typeof message !== "object") return null;
-    if (message.imageMessage) return "image";
-    if (message.videoMessage) return "video";
-    if (message.audioMessage) return "audio";
-    if (message.stickerMessage) return "sticker";
-    return null;
-}
-
-function unwrapQuotedMessage(message) {
-    let current = message;
-    for (let i = 0; i < 6; i++) {
-        const wrapper =
-            current?.viewOnceMessageV2 ||
-            current?.viewOnceMessage ||
-            current?.viewOnceMessageV2Extension ||
-            current?.documentWithCaptionMessage ||
-            current?.ephemeralMessage;
-        if (!wrapper?.message) break;
-        current = wrapper.message;
-    }
-    return current;
-}
-
-async function downloadMedia(message, type) {
-    const mediaMessage = message[type + "Message"];
-    if (!mediaMessage) throw new Error("Missing " + type);
-    const stream = await downloadContentFromMessage(mediaMessage, type);
-    const chunks = [];
-    for await (const chunk of stream) chunks.push(chunk);
-    return Buffer.concat(chunks);
-}
-
-async function convertToVoiceNote(buffer) {
-    const inFile = tmp("in");
-    const outFile = tmp("ogg");
-    fs.writeFileSync(inFile, buffer);
+function px() {
     try {
-        await execAsync(
-            'ffmpeg -hide_banner -loglevel error -y -i "' + inFile +
-            '" -vn -c:a libopus -ac 1 -ar 48000 "' + outFile + '"'
-        );
-        return fs.readFileSync(outFile);
-    } finally {
-        try { fs.unlinkSync(inFile); } catch (e) {}
-        try { fs.unlinkSync(outFile); } catch (e) {}
+        return getSettings().prefix || "#";
+    } catch (e) {
+        return "#";
     }
 }
 
-async function stickerToImage(buffer) {
-    const inFile = tmp("webp");
-    const outFile = tmp("jpg");
-    fs.writeFileSync(inFile, buffer);
+function loadCache() {
     try {
-        await execAsync(
-            'ffmpeg -hide_banner -loglevel error -y -i "' + inFile +
-            '" -frames:v 1 -q:v 2 "' + outFile + '"'
-        );
-        return fs.readFileSync(outFile);
-    } finally {
-        try { fs.unlinkSync(inFile); } catch (e) {}
-        try { fs.unlinkSync(outFile); } catch (e) {}
-    }
-}
-
-function loadGroupCache() {
-    try {
-        if (!fs.existsSync(GROUPS_CACHE_FILE)) return null;
-        const data = JSON.parse(fs.readFileSync(GROUPS_CACHE_FILE, "utf8"));
-        if (!data || !data.ts || !Array.isArray(data.groups)) return null;
-        if (Date.now() - data.ts > CACHE_TTL_MS) return null;
-        return data.groups;
+        if (!fs.existsSync(CACHE_FILE)) return null;
+        const raw = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
+        if (!raw || !raw.at || !Array.isArray(raw.groups)) return null;
+        if (Date.now() - raw.at > CACHE_TTL_MS) return null;
+        return raw.groups;
     } catch (e) {
         return null;
     }
 }
 
-function saveGroupCache(groups) {
+function saveCache(groups) {
     try {
-        const dir = path.dirname(GROUPS_CACHE_FILE);
+        const dir = path.dirname(CACHE_FILE);
         if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-        fs.writeFileSync(GROUPS_CACHE_FILE, JSON.stringify({ ts: Date.now(), groups: groups }, null, 2));
+        fs.writeFileSync(
+            CACHE_FILE,
+            JSON.stringify({ at: Date.now(), groups: groups }, null, 2)
+        );
     } catch (e) {}
 }
 
-async function fetchGroups(sock) {
-    const cached = loadGroupCache();
-    if (cached && cached.length) return cached;
+async function fetchGroups(sock, force) {
+    if (!force) {
+        const cached = loadCache();
+        if (cached && cached.length) return cached;
+    }
     const map = await sock.groupFetchAllParticipating();
-    const groups = Object.values(map || {})
-        .map(function (g) { return { id: g.id, subject: g.subject || g.id }; })
-        .sort(function (a, b) { return String(a.subject).localeCompare(String(b.subject)); });
-    saveGroupCache(groups);
-    return groups;
+    const list = Object.values(map || {})
+        .map(function (g) {
+            return {
+                id: g.id,
+                subject: g.subject || g.id
+            };
+        })
+        .sort(function (a, b) {
+            return String(a.subject).localeCompare(String(b.subject));
+        });
+    saveCache(list);
+    return list;
 }
 
 function parseArgs(args) {
-    let color = DEFAULT_COLOR;
     const targets = [];
-    const rest = [];
-    (args || []).forEach(function (a) {
-        const s = String(a || "");
-        const low = s.toLowerCase();
-        if (COLOR_MAP[low]) { color = COLOR_MAP[low]; return; }
-        if (/^\d+$/.test(s)) { targets.push(parseInt(s, 10)); return; }
-        if (s.endsWith("@g.us")) { targets.push(s); return; }
-        rest.push(s);
-    });
-    return { color: color, targets: targets, caption: rest.join(" ").trim() };
-}
+    let color = null;
+    const textParts = [];
 
-async function tryDeleteChatBubble(sock, jid, sent) {
-    try {
-        const key = sent && sent.key;
-        if (!key) return;
-        await new Promise(function (r) { setTimeout(r, 800); });
-        await sock.sendMessage(jid, { delete: key });
-    } catch (e) {
-        console.log("[GCSTATUS] delete bubble:", e.message);
-    }
-}
-
-/**
- * 1) Group JID + isGroupStatus → shows on group profile/story
- * 2) Delete that message from chat → media not left in the group
- */
-async function postGroupStatus(sock, groupJid, content, backgroundColor) {
-    const statusSourceType = content.text
-        ? "TEXT"
-        : content.image ? "IMAGE"
-        : content.video ? "VIDEO"
-        : content.audio ? "AUDIO"
-        : content.sticker ? "IMAGE"
-        : "TEXT";
-
-    const body = { ...content };
-    const bg = backgroundColor || DEFAULT_COLOR;
-    if (body.text) {
-        body.backgroundColor = hexToArgb(bg);
-        body.font = 0;
+    for (let i = 0; i < (args || []).length; i++) {
+        const a = String(args[i] || "").trim();
+        if (!a) continue;
+        if (/^\d+$/.test(a)) {
+            targets.push(Number(a));
+            continue;
+        }
+        const low = a.toLowerCase();
+        if (COLOR_MAP[low] !== undefined) {
+            color = low;
+            continue;
+        }
+        textParts.push(a);
     }
 
-    const payload = {
-        ...body,
-        contextInfo: {
-            isGroupStatus: true,
-            statusSourceType: statusSourceType,
-            statusAttributions: [{ type: 10 }],
-            statusAudienceMetadata: { audienceType: "ALL" }
+    return {
+        targets: targets,
+        color: color,
+        text: textParts.join(" ").trim()
+    };
+}
+
+function unwrapMessage(message) {
+    if (!message) return null;
+    let current = message;
+    for (let i = 0; i < 6; i++) {
+        const next =
+            current.ephemeralMessage?.message ||
+            current.viewOnceMessage?.message ||
+            current.viewOnceMessageV2?.message ||
+            current.viewOnceMessageV2Extension?.message ||
+            current.documentWithCaptionMessage?.message;
+        if (!next) break;
+        current = next;
+    }
+    return current;
+}
+
+function getQuotedContext(message) {
+    const m = message?.message || {};
+    return (
+        m.extendedTextMessage?.contextInfo ||
+        m.imageMessage?.contextInfo ||
+        m.videoMessage?.contextInfo ||
+        m.documentMessage?.contextInfo ||
+        {}
+    );
+}
+
+function getQuotedMessage(message) {
+    return getQuotedContext(message)?.quotedMessage || null;
+}
+
+function getMedia(message) {
+    const current = unwrapMessage(message);
+    if (!current) return null;
+    if (current.imageMessage) {
+        return { type: "image", message: current.imageMessage };
+    }
+    if (current.videoMessage) {
+        return { type: "video", message: current.videoMessage };
+    }
+    return null;
+}
+
+function getText(message) {
+    const current = unwrapMessage(message);
+    if (!current) return "";
+    return (
+        current.conversation ||
+        current.extendedTextMessage?.text ||
+        current.imageMessage?.caption ||
+        current.videoMessage?.caption ||
+        current.documentMessage?.caption ||
+        ""
+    ).trim();
+}
+
+function getSenderJid(sock) {
+    if (!sock?.user?.id) {
+        throw new Error("Bot WhatsApp identity is unavailable.");
+    }
+    return jidNormalizedUser(sock.user.id);
+}
+
+function buildTextStatusContext(senderJid) {
+    return {
+        forwardingScore: 0,
+        featureEligibilities: {
+            canBeReshared: true,
+            canReceiveMultiReact: true
+        },
+        pairedMediaType: 0,
+        statusSourceType: 4,
+        isGroupStatus: true,
+        statusAttributions: [
+            {
+                type: 6,
+                groupStatus: {
+                    authorJid: senderJid
+                }
+            }
+        ],
+        statusAudienceMetadata: {
+            audienceType: 1,
+            listEmoji: "⚡",
+            listName: "VENOM X"
+        }
+    };
+}
+
+function buildMediaStatusContext() {
+    return {
+        forwardingScore: 0,
+        featureEligibilities: {
+            canBeReshared: true,
+            canReceiveMultiReact: true
+        },
+        pairedMediaType: 0,
+        statusSourceType: 4,
+        isGroupStatus: true,
+        statusAttributions: [{ type: 10 }],
+        statusAudienceMetadata: {
+            audienceType: 1,
+            listEmoji: "⚡",
+            listName: "VENOM X"
+        }
+    };
+}
+
+async function sendGroupTextStatus(sock, groupJid, text, colorName) {
+    if (!text || !String(text).trim()) {
+        throw new Error("Status text is empty.");
+    }
+
+    const senderJid = getSenderJid(sock);
+    const bg =
+        (colorName && COLOR_MAP[colorName]) !== undefined
+            ? COLOR_MAP[colorName]
+            : DEFAULT_BG;
+
+    const innerMessage = {
+        extendedTextMessage: {
+            text: String(text).trim(),
+            font: 1,
+            backgroundArgb: bg,
+            contextInfo: buildTextStatusContext(senderJid)
         }
     };
 
-    // Method A: group jid (works for group profile)
-    const sent = await sock.sendMessage(groupJid, payload);
+    const generated = generateWAMessageFromContent(
+        groupJid,
+        {
+            groupStatusMessageV2: {
+                message: innerMessage
+            }
+        },
+        { userJid: senderJid }
+    );
 
-    // Remove chat bubble so media doesn't stay in the group
-    await tryDeleteChatBubble(sock, groupJid, sent);
+    if (!generated?.message || !generated?.key?.id) {
+        throw new Error("Failed to build text group status.");
+    }
 
-    return sent;
+    await sock.relayMessage(groupJid, generated.message, {
+        messageId: generated.key.id
+    });
+
+    return generated.key.id;
 }
 
-function helpText() {
-    return (
-`╭━━〔 📢 VENOM X GC STATUS 〕━━⬣
+async function sendGroupMediaStatus(
+    sock,
+    groupJid,
+    type,
+    buffer,
+    caption,
+    originalMimetype
+) {
+    if (!buffer || !buffer.length) {
+        throw new Error("Media buffer is empty.");
+    }
+    if (type !== "image" && type !== "video") {
+        throw new Error("Unsupported media type: " + type);
+    }
 
-#gcstatus list
-#gcstatus Hello purple
-#gcstatus 1 Hello blue
-Reply media + #gcstatus [caption] [color]
+    const senderJid = getSenderJid(sock);
+    const mime =
+        originalMimetype ||
+        (type === "image" ? "image/jpeg" : "video/mp4");
 
-Story goes to *group profile*
-Chat bubble is *auto-deleted*
+    const mediaInput =
+        type === "image"
+            ? { image: buffer, mimetype: mime, caption: caption || undefined }
+            : { video: buffer, mimetype: mime, caption: caption || undefined };
 
-╰━━━━━━━━━━━━━━━━⬣`
+    const prepared = await prepareWAMessageMedia(mediaInput, {
+        upload: sock.waUploadToServer
+    });
+
+    const mediaKey = type === "image" ? "imageMessage" : "videoMessage";
+    const mediaMessage = prepared?.[mediaKey];
+    if (!mediaMessage) {
+        throw new Error("Baileys failed to prepare " + type);
+    }
+
+    mediaMessage.contextInfo = {
+        ...(mediaMessage.contextInfo || {}),
+        ...buildMediaStatusContext()
+    };
+
+    let generated = generateWAMessageFromContent(
+        groupJid,
+        {
+            groupStatusMessageV2: {
+                message: {
+                    [mediaKey]: mediaMessage
+                }
+            }
+        },
+        { userJid: senderJid }
     );
+
+    if (!generated?.message || !generated?.key?.id) {
+        generated = generateWAMessageFromContent(
+            groupJid,
+            { [mediaKey]: mediaMessage },
+            { userJid: senderJid }
+        );
+    }
+
+    if (!generated?.message || !generated?.key?.id) {
+        throw new Error("Failed to build " + type + " group status.");
+    }
+
+    await sock.relayMessage(groupJid, generated.message, {
+        messageId: generated.key.id
+    });
+
+    return generated.key.id;
+}
+
+async function downloadQuotedMedia(message, from, quoted) {
+    const contextInfo = getQuotedContext(message);
+    if (!contextInfo?.stanzaId) {
+        throw new Error("Could not identify the replied message.");
+    }
+
+    const quotedKey = {
+        remoteJid: from,
+        id: contextInfo.stanzaId,
+        participant: contextInfo.participant,
+        fromMe: false
+    };
+
+    const buffer = await downloadMediaMessage(
+        { key: quotedKey, message: quoted },
+        "buffer",
+        {},
+        {}
+    );
+
+    if (!buffer || !buffer.length) {
+        throw new Error("Downloaded media is empty.");
+    }
+    return buffer;
+}
+
+function resolveTargets(groups, numbers, currentFrom) {
+    if (!numbers.length) {
+        return currentFrom && currentFrom.endsWith("@g.us")
+            ? [currentFrom]
+            : [];
+    }
+    const out = [];
+    for (let i = 0; i < numbers.length; i++) {
+        const n = numbers[i];
+        const g = groups[n - 1];
+        if (g && g.id) out.push(g.id);
+    }
+    return out;
 }
 
 module.exports = {
     name: "status2",
-    aliases: ["gcstatus", "gstatus", "groupstatus"],
+    aliases: ["gcstatus", "gcs", "groupstatus"],
 
-    run: async function ({ sock, from, message, args, reply }) {
-        const sub = String((args && args[0]) || "").toLowerCase();
+    run: async function ({
+        sock,
+        from,
+        message,
+        args,
+        reply,
+        isOwner,
+        isPrivileged
+    }) {
+        if (!isOwner && !isPrivileged) {
+            return reply("❌ Owner / sudo only.");
+        }
 
+        const prefix = px();
+        const sub = String(args[0] || "").toLowerCase();
+
+        // ── LIST ──────────────────────────────────────────
         if (sub === "list" || sub === "groups" || sub === "ls") {
             try {
-                await reply("⏳ Loading groups…");
-                const groups = await fetchGroups(sock);
-                if (!groups.length) return reply("❌ No groups found.");
-                let text = "╭━━〔 📋 GC STATUS GROUPS 〕━━⬣\n┃\n";
-                groups.forEach(function (g, i) {
-                    text += "┃ *" + (i + 1) + "* · " + String(g.subject || g.id).slice(0, 40) + "\n";
-                });
-                text += "┃\n┃ Example: #gcstatus 1 Hello blue\n╰━━━━━━━━━━━━━━━━⬣";
+                await reply("⏳ Loading groups...");
+                const groups = await fetchGroups(sock, true);
+                if (!groups.length) {
+                    return reply("❌ Bot is not in any groups.");
+                }
+
+                let text =
+                    "╭━━〔 📋 GCSTATUS LIST 〕━━⬣\n┃\n" +
+                    "┃ Total: *" +
+                    groups.length +
+                    "*\n┃\n";
+
+                for (let i = 0; i < groups.length; i++) {
+                    text +=
+                        "┃ *" +
+                        (i + 1) +
+                        ".* " +
+                        groups[i].subject +
+                        "\n";
+                }
+
+                text +=
+                    "┃\n┃ Use numbers:\n┃ " +
+                    prefix +
+                    "gcstatus 1 3 hello\n┃ " +
+                    prefix +
+                    "gcstatus 2 blue hi\n" +
+                    "╰━━━━━━━━━━━━━━━━⬣";
+
                 return reply(text);
             } catch (err) {
+                console.error("[GCSTATUS LIST]", err);
                 return reply("❌ List failed: " + (err.message || err));
             }
         }
 
-        const ctx =
-            message.message?.extendedTextMessage?.contextInfo ||
-            message.message?.imageMessage?.contextInfo ||
-            message.message?.videoMessage?.contextInfo ||
-            {};
-        const quotedMessage = ctx.quotedMessage || null;
-
-        if ((!args || !args.length) && !quotedMessage) return reply(helpText());
-
-        const parsed = parseArgs(args);
-        const caption = parsed.caption;
-        const color = parsed.color;
-
-        let targetJids = [];
-        if (parsed.targets.length) {
-            const groups = await fetchGroups(sock);
-            for (let t = 0; t < parsed.targets.length; t++) {
-                const item = parsed.targets[t];
-                if (typeof item === "string" && item.endsWith("@g.us")) targetJids.push(item);
-                else if (typeof item === "number") {
-                    const g = groups[item - 1];
-                    if (g && g.id) targetJids.push(g.id);
-                }
-            }
-            targetJids = targetJids.filter(function (v, i, a) { return a.indexOf(v) === i; });
-            if (!targetJids.length) {
-                return reply("❌ Invalid group number. Use *#gcstatus list* first.");
-            }
-        } else {
-            if (!from.endsWith("@g.us")) {
-                return reply("❌ Use in a group, or #gcstatus list → #gcstatus 1 Hello");
-            }
-            targetJids = [from];
-        }
-
-        let content = null;
-
-        if (!quotedMessage) {
-            if (!caption) return reply(helpText());
-            content = { text: caption };
-        } else {
-            const mediaPayload = unwrapQuotedMessage(quotedMessage);
-            const mediaType = detectMediaType(mediaPayload);
-            if (!mediaType) return reply("❌ Reply to image, video, audio, or sticker.");
-
-            await reply("⏳ Uploading *" + mediaType + "* to group story…");
-
-            const buffer = await downloadMedia(mediaPayload, mediaType);
-            if (!buffer || !buffer.length) throw new Error("Empty download");
-
-            if (mediaType === "audio") {
-                content = {
-                    audio: await convertToVoiceNote(buffer),
-                    mimetype: "audio/ogg; codecs=opus",
-                    ptt: true
-                };
-            } else if (mediaType === "sticker") {
-                content = { sticker: buffer };
-            } else {
-                content = { [mediaType]: buffer, caption: caption || "" };
-            }
-        }
-
-        await reply("🚀 Group story · *" + targetJids.length + "* group(s)…");
-
-        let ok = 0;
-        let fail = 0;
-
-        for (let i = 0; i < targetJids.length; i++) {
-            const jid = targetJids[i];
-            try {
-                if (content.sticker) {
-                    try {
-                        await postGroupStatus(sock, jid, content, color);
-                    } catch (e1) {
-                        const img = await stickerToImage(content.sticker);
-                        await postGroupStatus(
-                            sock,
-                            jid,
-                            { image: img, caption: caption || "" },
-                            color
-                        );
-                    }
-                } else {
-                    await postGroupStatus(sock, jid, content, color);
-                }
-                ok++;
-            } catch (e) {
-                console.log("[GCSTATUS] fail", jid, e.message);
-                fail++;
-            }
-            if (targetJids.length > 1) {
-                await new Promise(function (r) { setTimeout(r, 700); });
-            }
-        }
-
-        return reply(
-`╭━━〔 ✅ GC STATUS 〕━━⬣
-┃ Group story posted
-┃ Chat media auto-removed
-┃ Success : *${ok}*
-┃ Failed  : *${fail}*
+        // ── HELP ──────────────────────────────────────────
+        if (!args.length && !getQuotedMessage(message)) {
+            return reply(
+`╭━━〔 📢 VENOM GCSTATUS 〕━━⬣
+┃
+┃ 📋 List groups:
+┃ ${prefix}gcstatus list
+┃
+┃ 📝 This group:
+┃ ${prefix}gcstatus Hello
+┃
+┃ 📝 Multi-group:
+┃ ${prefix}gcstatus 1 3 Hello
+┃
+┃ 🎨 Color (text):
+┃ ${prefix}gcstatus 2 blue Hello
+┃
+┃ 🖼️ Media:
+┃ Reply image/video + ${prefix}gcstatus
+┃ Reply + ${prefix}gcstatus 1 4 caption
+┃
+┃ Colors: purple pink red blue green
+┃ gold cyan black white ...
+┃
+┃ Posts to *Group Status* only
+┃
 ╰━━━━━━━━━━━━━━━━⬣`
-        );
+            );
+        }
+
+        try {
+            const parsed = parseArgs(args);
+            const groups = await fetchGroups(sock, false);
+            const targetJids = resolveTargets(
+                groups,
+                parsed.targets,
+                from
+            );
+
+            if (!targetJids.length) {
+                return reply(
+                    "❌ No valid target groups.\nUse `" +
+                        prefix +
+                        "gcstatus list` first."
+                );
+            }
+
+            // need to be in a group OR targeting by numbers
+            if (
+                parsed.targets.length === 0 &&
+                (!from || !from.endsWith("@g.us"))
+            ) {
+                return reply(
+                    "❌ Use inside a group, or pick numbers from `" +
+                        prefix +
+                        "gcstatus list`."
+                );
+            }
+
+            const quoted = getQuotedMessage(message);
+
+            // ── MEDIA ─────────────────────────────────────
+            if (quoted) {
+                const media = getMedia(quoted);
+                if (media) {
+                    await reply(
+                        "⏳ Posting " +
+                            media.type +
+                            " to *" +
+                            targetJids.length +
+                            "* group status..."
+                    );
+
+                    const buffer = await downloadQuotedMedia(
+                        message,
+                        from,
+                        quoted
+                    );
+                    const caption =
+                        parsed.text ||
+                        media.message?.caption ||
+                        "";
+                    const mimetype =
+                        media.message?.mimetype ||
+                        (media.type === "image"
+                            ? "image/jpeg"
+                            : "video/mp4");
+
+                    let ok = 0;
+                    let fail = 0;
+
+                    for (let i = 0; i < targetJids.length; i++) {
+                        try {
+                            await sendGroupMediaStatus(
+                                sock,
+                                targetJids[i],
+                                media.type,
+                                buffer,
+                                caption,
+                                mimetype
+                            );
+                            ok++;
+                        } catch (e) {
+                            console.log(
+                                "[GCSTATUS] media fail",
+                                targetJids[i],
+                                e.message
+                            );
+                            fail++;
+                        }
+                        if (targetJids.length > 1) {
+                            await new Promise(function (r) {
+                                setTimeout(r, 700);
+                            });
+                        }
+                    }
+
+                    return reply(
+                        "✅ " +
+                            (media.type === "image" ? "Image" : "Video") +
+                            " group status\n" +
+                            "• Success: *" +
+                            ok +
+                            "*\n" +
+                            "• Failed: *" +
+                            fail +
+                            "*"
+                    );
+                }
+
+                // quoted text only
+                const quotedText = getText(quoted);
+                if (quotedText && !parsed.text) {
+                    parsed.text = quotedText;
+                }
+            }
+
+            // ── TEXT ──────────────────────────────────────
+            if (!parsed.text) {
+                return reply(
+                    "❌ Provide text or reply to image/video.\n" +
+                        prefix +
+                        "gcstatus help"
+                );
+            }
+
+            await reply(
+                "⏳ Posting text to *" +
+                    targetJids.length +
+                    "* group status..."
+            );
+
+            let ok = 0;
+            let fail = 0;
+
+            for (let i = 0; i < targetJids.length; i++) {
+                try {
+                    await sendGroupTextStatus(
+                        sock,
+                        targetJids[i],
+                        parsed.text,
+                        parsed.color
+                    );
+                    ok++;
+                } catch (e) {
+                    console.log(
+                        "[GCSTATUS] text fail",
+                        targetJids[i],
+                        e.message
+                    );
+                    fail++;
+                }
+                if (targetJids.length > 1) {
+                    await new Promise(function (r) {
+                        setTimeout(r, 700);
+                    });
+                }
+            }
+
+            return reply(
+                "✅ Text group status\n" +
+                    "• Success: *" +
+                    ok +
+                    "*\n" +
+                    "• Failed: *" +
+                    fail +
+                    "*" +
+                    (parsed.color ? "\n• Color: *" + parsed.color + "*" : "")
+            );
+        } catch (error) {
+            console.error("[GCSTATUS ERROR]", error);
+            return reply(
+                "❌ Group Status failed:\n" +
+                    String(error?.message || error).slice(0, 300)
+            );
+        }
     }
 };
