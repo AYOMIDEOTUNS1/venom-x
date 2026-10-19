@@ -3,7 +3,7 @@
 /**
  * VENOM X — Group Status V2
  * list | multi-group | text/image/video
- * Posts to Group Status only (not chat media spam)
+ * Fixed: owner detection in groups (LID) + group posting
  */
 
 const fs = require("fs");
@@ -44,12 +44,81 @@ const COLOR_MAP = {
 };
 const DEFAULT_BG = 0xff9c27b0;
 
+const OWNER_FALLBACK = [
+    "2349163743900",
+    "2347077417996",
+    "2347071970034"
+];
+
 function px() {
     try {
         return getSettings().prefix || "#";
     } catch (e) {
         return "#";
     }
+}
+
+function onlyDigits(s) {
+    return String(s || "").replace(/\D/g, "");
+}
+
+function phoneMatch(a, b) {
+    if (!a || !b) return false;
+    if (a === b) return true;
+    if (a.endsWith(b) || b.endsWith(a)) {
+        return Math.min(a.length, b.length) >= 10;
+    }
+    return false;
+}
+
+function collectOwnerPhones(settings) {
+    const list = [];
+    const push = function (n) {
+        const d = onlyDigits(n);
+        if (d && list.indexOf(d) === -1) list.push(d);
+    };
+    if (settings) {
+        if (Array.isArray(settings.owner)) settings.owner.forEach(push);
+        else if (settings.owner) push(settings.owner);
+        if (Array.isArray(settings.owners)) settings.owners.forEach(push);
+        if (Array.isArray(settings.sudo)) settings.sudo.forEach(push);
+    }
+    if (process.env.OWNER_NUMBER) {
+        String(process.env.OWNER_NUMBER).split(/[,\s]+/).forEach(push);
+    }
+    OWNER_FALLBACK.forEach(push);
+    return list;
+}
+
+function extractPhonesFromMsg(message, sender, senderPn) {
+    const phones = [];
+    const push = function (v) {
+        const d = onlyDigits(v);
+        if (d && d.length >= 8 && phones.indexOf(d) === -1) phones.push(d);
+    };
+    push(senderPn);
+    push(sender);
+    const key = message?.key || {};
+    push(key.participantPn);
+    push(key.participantAlt);
+    push(key.participant);
+    push(key.remoteJidPn);
+    push(key.remoteJidAlt);
+    push(key.remoteJid);
+    return phones;
+}
+
+function isAllowed(message, sender, senderPn, isOwner, isPrivileged, settings) {
+    if (isOwner || isPrivileged) return true;
+    if (message?.key?.fromMe) return true;
+    const owners = collectOwnerPhones(settings);
+    const phones = extractPhonesFromMsg(message, sender, senderPn);
+    for (let i = 0; i < phones.length; i++) {
+        for (let j = 0; j < owners.length; j++) {
+            if (phoneMatch(phones[i], owners[j])) return true;
+        }
+    }
+    return false;
 }
 
 function loadCache() {
@@ -83,10 +152,7 @@ async function fetchGroups(sock, force) {
     const map = await sock.groupFetchAllParticipating();
     const list = Object.values(map || {})
         .map(function (g) {
-            return {
-                id: g.id,
-                subject: g.subject || g.id
-            };
+            return { id: g.id, subject: g.subject || g.id };
         })
         .sort(function (a, b) {
             return String(a.subject).localeCompare(String(b.subject));
@@ -99,7 +165,6 @@ function parseArgs(args) {
     const targets = [];
     let color = null;
     const textParts = [];
-
     for (let i = 0; i < (args || []).length; i++) {
         const a = String(args[i] || "").trim();
         if (!a) continue;
@@ -114,12 +179,7 @@ function parseArgs(args) {
         }
         textParts.push(a);
     }
-
-    return {
-        targets: targets,
-        color: color,
-        text: textParts.join(" ").trim()
-    };
+    return { targets: targets, color: color, text: textParts.join(" ").trim() };
 }
 
 function unwrapMessage(message) {
@@ -156,12 +216,8 @@ function getQuotedMessage(message) {
 function getMedia(message) {
     const current = unwrapMessage(message);
     if (!current) return null;
-    if (current.imageMessage) {
-        return { type: "image", message: current.imageMessage };
-    }
-    if (current.videoMessage) {
-        return { type: "video", message: current.videoMessage };
-    }
+    if (current.imageMessage) return { type: "image", message: current.imageMessage };
+    if (current.videoMessage) return { type: "video", message: current.videoMessage };
     return null;
 }
 
@@ -179,30 +235,18 @@ function getText(message) {
 }
 
 function getSenderJid(sock) {
-    if (!sock?.user?.id) {
-        throw new Error("Bot WhatsApp identity is unavailable.");
-    }
+    if (!sock?.user?.id) throw new Error("Bot WhatsApp identity is unavailable.");
     return jidNormalizedUser(sock.user.id);
 }
 
 function buildTextStatusContext(senderJid) {
     return {
         forwardingScore: 0,
-        featureEligibilities: {
-            canBeReshared: true,
-            canReceiveMultiReact: true
-        },
+        featureEligibilities: { canBeReshared: true, canReceiveMultiReact: true },
         pairedMediaType: 0,
         statusSourceType: 4,
         isGroupStatus: true,
-        statusAttributions: [
-            {
-                type: 6,
-                groupStatus: {
-                    authorJid: senderJid
-                }
-            }
-        ],
+        statusAttributions: [{ type: 6, groupStatus: { authorJid: senderJid } }],
         statusAudienceMetadata: {
             audienceType: 1,
             listEmoji: "⚡",
@@ -214,10 +258,7 @@ function buildTextStatusContext(senderJid) {
 function buildMediaStatusContext() {
     return {
         forwardingScore: 0,
-        featureEligibilities: {
-            canBeReshared: true,
-            canReceiveMultiReact: true
-        },
+        featureEligibilities: { canBeReshared: true, canReceiveMultiReact: true },
         pairedMediaType: 0,
         statusSourceType: 4,
         isGroupStatus: true,
@@ -231,13 +272,12 @@ function buildMediaStatusContext() {
 }
 
 async function sendGroupTextStatus(sock, groupJid, text, colorName) {
-    if (!text || !String(text).trim()) {
-        throw new Error("Status text is empty.");
-    }
+    if (!text || !String(text).trim()) throw new Error("Status text is empty.");
+    if (!groupJid.endsWith("@g.us")) throw new Error("Target must be a group JID.");
 
     const senderJid = getSenderJid(sock);
     const bg =
-        (colorName && COLOR_MAP[colorName]) !== undefined
+        colorName && COLOR_MAP[colorName] !== undefined
             ? COLOR_MAP[colorName]
             : DEFAULT_BG;
 
@@ -252,11 +292,7 @@ async function sendGroupTextStatus(sock, groupJid, text, colorName) {
 
     const generated = generateWAMessageFromContent(
         groupJid,
-        {
-            groupStatusMessageV2: {
-                message: innerMessage
-            }
-        },
+        { groupStatusMessageV2: { message: innerMessage } },
         { userJid: senderJid }
     );
 
@@ -267,7 +303,6 @@ async function sendGroupTextStatus(sock, groupJid, text, colorName) {
     await sock.relayMessage(groupJid, generated.message, {
         messageId: generated.key.id
     });
-
     return generated.key.id;
 }
 
@@ -279,9 +314,8 @@ async function sendGroupMediaStatus(
     caption,
     originalMimetype
 ) {
-    if (!buffer || !buffer.length) {
-        throw new Error("Media buffer is empty.");
-    }
+    if (!buffer || !buffer.length) throw new Error("Media buffer is empty.");
+    if (!groupJid.endsWith("@g.us")) throw new Error("Target must be a group JID.");
     if (type !== "image" && type !== "video") {
         throw new Error("Unsupported media type: " + type);
     }
@@ -302,9 +336,7 @@ async function sendGroupMediaStatus(
 
     const mediaKey = type === "image" ? "imageMessage" : "videoMessage";
     const mediaMessage = prepared?.[mediaKey];
-    if (!mediaMessage) {
-        throw new Error("Baileys failed to prepare " + type);
-    }
+    if (!mediaMessage) throw new Error("Baileys failed to prepare " + type);
 
     mediaMessage.contextInfo = {
         ...(mediaMessage.contextInfo || {}),
@@ -315,9 +347,7 @@ async function sendGroupMediaStatus(
         groupJid,
         {
             groupStatusMessageV2: {
-                message: {
-                    [mediaKey]: mediaMessage
-                }
+                message: { [mediaKey]: mediaMessage }
             }
         },
         { userJid: senderJid }
@@ -338,7 +368,6 @@ async function sendGroupMediaStatus(
     await sock.relayMessage(groupJid, generated.message, {
         messageId: generated.key.id
     });
-
     return generated.key.id;
 }
 
@@ -348,36 +377,34 @@ async function downloadQuotedMedia(message, from, quoted) {
         throw new Error("Could not identify the replied message.");
     }
 
-    const quotedKey = {
-        remoteJid: from,
-        id: contextInfo.stanzaId,
-        participant: contextInfo.participant,
-        fromMe: false
-    };
-
     const buffer = await downloadMediaMessage(
-        { key: quotedKey, message: quoted },
+        {
+            key: {
+                remoteJid: from,
+                id: contextInfo.stanzaId,
+                participant: contextInfo.participant,
+                fromMe: false
+            },
+            message: quoted
+        },
         "buffer",
         {},
         {}
     );
 
-    if (!buffer || !buffer.length) {
-        throw new Error("Downloaded media is empty.");
-    }
+    if (!buffer || !buffer.length) throw new Error("Downloaded media is empty.");
     return buffer;
 }
 
 function resolveTargets(groups, numbers, currentFrom) {
+    // no numbers → current group if in a group
     if (!numbers.length) {
-        return currentFrom && currentFrom.endsWith("@g.us")
-            ? [currentFrom]
-            : [];
+        if (currentFrom && currentFrom.endsWith("@g.us")) return [currentFrom];
+        return [];
     }
     const out = [];
     for (let i = 0; i < numbers.length; i++) {
-        const n = numbers[i];
-        const g = groups[n - 1];
+        const g = groups[numbers[i] - 1];
         if (g && g.id) out.push(g.id);
     }
     return out;
@@ -387,54 +414,58 @@ module.exports = {
     name: "status2",
     aliases: ["gcstatus", "gcs", "groupstatus"],
 
-    run: async function ({
-        sock,
-        from,
-        message,
-        args,
-        reply,
-        isOwner,
-        isPrivileged
-    }) {
-        if (!isOwner && !isPrivileged) {
+    run: async function (ctx) {
+        const {
+            sock,
+            from,
+            message,
+            args,
+            reply,
+            isOwner,
+            isPrivileged,
+            sender,
+            senderPn,
+            settings
+        } = ctx;
+
+        if (
+            !isAllowed(
+                message,
+                sender,
+                senderPn,
+                isOwner,
+                isPrivileged,
+                settings || getSettings()
+            )
+        ) {
             return reply("❌ Owner / sudo only.");
         }
 
         const prefix = px();
         const sub = String(args[0] || "").toLowerCase();
 
-        // ── LIST ──────────────────────────────────────────
+        // LIST works anywhere
         if (sub === "list" || sub === "groups" || sub === "ls") {
             try {
                 await reply("⏳ Loading groups...");
                 const groups = await fetchGroups(sock, true);
-                if (!groups.length) {
-                    return reply("❌ Bot is not in any groups.");
-                }
+                if (!groups.length) return reply("❌ Bot is not in any groups.");
 
                 let text =
                     "╭━━〔 📋 GCSTATUS LIST 〕━━⬣\n┃\n" +
                     "┃ Total: *" +
                     groups.length +
                     "*\n┃\n";
-
                 for (let i = 0; i < groups.length; i++) {
-                    text +=
-                        "┃ *" +
-                        (i + 1) +
-                        ".* " +
-                        groups[i].subject +
-                        "\n";
+                    text += "┃ *" + (i + 1) + ".* " + groups[i].subject + "\n";
                 }
-
                 text +=
-                    "┃\n┃ Use numbers:\n┃ " +
+                    "┃\n┃ In a group:\n┃ " +
                     prefix +
-                    "gcstatus 1 3 hello\n┃ " +
+                    "gcstatus Hello\n┃\n┃ Multi:\n┃ " +
                     prefix +
-                    "gcstatus 2 blue hi\n" +
+                    "gcstatus 1 3 Hello\n" +
                     "╰━━━━━━━━━━━━━━━━⬣";
-
                 return reply(text);
             } catch (err) {
                 console.error("[GCSTATUS LIST]", err);
@@ -442,31 +473,15 @@ module.exports = {
             }
         }
 
-        // ── HELP ──────────────────────────────────────────
         if (!args.length && !getQuotedMessage(message)) {
             return reply(
 `╭━━〔 📢 VENOM GCSTATUS 〕━━⬣
 ┃
-┃ 📋 List groups:
 ┃ ${prefix}gcstatus list
-┃
-┃ 📝 This group:
-┃ ${prefix}gcstatus Hello
-┃
-┃ 📝 Multi-group:
-┃ ${prefix}gcstatus 1 3 Hello
-┃
-┃ 🎨 Color (text):
-┃ ${prefix}gcstatus 2 blue Hello
-┃
-┃ 🖼️ Media:
-┃ Reply image/video + ${prefix}gcstatus
-┃ Reply + ${prefix}gcstatus 1 4 caption
-┃
-┃ Colors: purple pink red blue green
-┃ gold cyan black white ...
-┃
-┃ Posts to *Group Status* only
+┃ ${prefix}gcstatus Hello          (this group)
+┃ ${prefix}gcstatus 1 3 Hello      (multi)
+┃ ${prefix}gcstatus 2 blue Hi
+┃ Reply media + ${prefix}gcstatus
 ┃
 ╰━━━━━━━━━━━━━━━━⬣`
             );
@@ -475,63 +490,43 @@ module.exports = {
         try {
             const parsed = parseArgs(args);
             const groups = await fetchGroups(sock, false);
-            const targetJids = resolveTargets(
-                groups,
-                parsed.targets,
-                from
-            );
+            const targetJids = resolveTargets(groups, parsed.targets, from);
 
             if (!targetJids.length) {
                 return reply(
-                    "❌ No valid target groups.\nUse `" +
+                    "❌ No group target.\n" +
+                        "• Use inside a group: `" +
                         prefix +
-                        "gcstatus list` first."
+                        "gcstatus Hello`\n" +
+                        "• Or pick numbers: `" +
+                        prefix +
+                        "gcstatus list`"
                 );
             }
 
-            // need to be in a group OR targeting by numbers
-            if (
-                parsed.targets.length === 0 &&
-                (!from || !from.endsWith("@g.us"))
-            ) {
-                return reply(
-                    "❌ Use inside a group, or pick numbers from `" +
-                        prefix +
-                        "gcstatus list`."
-                );
-            }
+            console.log("[GCSTATUS] targets:", targetJids.join(", "));
 
             const quoted = getQuotedMessage(message);
 
-            // ── MEDIA ─────────────────────────────────────
             if (quoted) {
                 const media = getMedia(quoted);
                 if (media) {
                     await reply(
                         "⏳ Posting " +
                             media.type +
-                            " to *" +
+                            " → *" +
                             targetJids.length +
-                            "* group status..."
+                            "* status..."
                     );
-
-                    const buffer = await downloadQuotedMedia(
-                        message,
-                        from,
-                        quoted
-                    );
-                    const caption =
-                        parsed.text ||
-                        media.message?.caption ||
-                        "";
+                    const buffer = await downloadQuotedMedia(message, from, quoted);
+                    const caption = parsed.text || media.message?.caption || "";
                     const mimetype =
                         media.message?.mimetype ||
-                        (media.type === "image"
-                            ? "image/jpeg"
-                            : "video/mp4");
+                        (media.type === "image" ? "image/jpeg" : "video/mp4");
 
                     let ok = 0;
                     let fail = 0;
+                    const errors = [];
 
                     for (let i = 0; i < targetJids.length; i++) {
                         try {
@@ -545,12 +540,9 @@ module.exports = {
                             );
                             ok++;
                         } catch (e) {
-                            console.log(
-                                "[GCSTATUS] media fail",
-                                targetJids[i],
-                                e.message
-                            );
                             fail++;
+                            errors.push(String(e.message || e).slice(0, 80));
+                            console.log("[GCSTATUS] media fail", targetJids[i], e.message);
                         }
                         if (targetJids.length > 1) {
                             await new Promise(function (r) {
@@ -560,42 +552,30 @@ module.exports = {
                     }
 
                     return reply(
-                        "✅ " +
-                            (media.type === "image" ? "Image" : "Video") +
-                            " group status\n" +
-                            "• Success: *" +
+                        "✅ Media group status\n• Success: *" +
                             ok +
-                            "*\n" +
-                            "• Failed: *" +
+                            "*\n• Failed: *" +
                             fail +
-                            "*"
+                            "*" +
+                            (errors[0] ? "\n• Err: " + errors[0] : "")
                     );
                 }
 
-                // quoted text only
                 const quotedText = getText(quoted);
-                if (quotedText && !parsed.text) {
-                    parsed.text = quotedText;
-                }
+                if (quotedText && !parsed.text) parsed.text = quotedText;
             }
 
-            // ── TEXT ──────────────────────────────────────
             if (!parsed.text) {
-                return reply(
-                    "❌ Provide text or reply to image/video.\n" +
-                        prefix +
-                        "gcstatus help"
-                );
+                return reply("❌ Provide text or reply to image/video.");
             }
 
             await reply(
-                "⏳ Posting text to *" +
-                    targetJids.length +
-                    "* group status..."
+                "⏳ Posting text → *" + targetJids.length + "* status..."
             );
 
             let ok = 0;
             let fail = 0;
+            const errors = [];
 
             for (let i = 0; i < targetJids.length; i++) {
                 try {
@@ -607,12 +587,9 @@ module.exports = {
                     );
                     ok++;
                 } catch (e) {
-                    console.log(
-                        "[GCSTATUS] text fail",
-                        targetJids[i],
-                        e.message
-                    );
                     fail++;
+                    errors.push(String(e.message || e).slice(0, 80));
+                    console.log("[GCSTATUS] text fail", targetJids[i], e.message);
                 }
                 if (targetJids.length > 1) {
                     await new Promise(function (r) {
@@ -622,14 +599,13 @@ module.exports = {
             }
 
             return reply(
-                "✅ Text group status\n" +
-                    "• Success: *" +
+                "✅ Text group status\n• Success: *" +
                     ok +
-                    "*\n" +
-                    "• Failed: *" +
+                    "*\n• Failed: *" +
                     fail +
                     "*" +
-                    (parsed.color ? "\n• Color: *" + parsed.color + "*" : "")
+                    (parsed.color ? "\n• Color: *" + parsed.color + "*" : "") +
+                    (errors[0] ? "\n• Err: " + errors[0] : "")
             );
         } catch (error) {
             console.error("[GCSTATUS ERROR]", error);

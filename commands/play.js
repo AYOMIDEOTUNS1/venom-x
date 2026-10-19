@@ -1,18 +1,18 @@
+"use strict";
+
 /**
- * VENOM X PLAY
- * Search: OmegaTech Apple Music
- * Download: OmegaTech action=download (fallback: YT / iTunes preview)
- *
+ * VENOM X — Apple Music Search & Download (Omegatech)
  * #play Alone
  * #play Alone 2
+ * #apple <query>
  */
 
 const axios = require("axios");
-const yts = require("yt-search");
 const { getSettings } = require("../lib/settingsCache");
 
-const UA =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+const searchCache = new Map(); // sender -> { results, query, timestamp }
+const activeDownloads = new Set();
+const CACHE_MS = 5 * 60 * 1000;
 
 function px() {
     try {
@@ -22,274 +22,236 @@ function px() {
     }
 }
 
-async function appleSearch(query) {
-    const { data } = await axios.get(
-        "https://api.omegatech.app/api/Search/Applemusic",
-        {
-            params: { action: "search", query: query },
-            timeout: 25000,
-            headers: { "User-Agent": "VENOM-X" }
-        }
-    );
-
-    if (!data || data.success === false) {
-        throw new Error((data && data.error) || "Apple search failed");
-    }
-
-    const results =
-        (data.data && data.data.results) ||
-        data.results ||
-        [];
-
-    if (!Array.isArray(results) || !results.length) {
-        throw new Error("No songs found");
-    }
-    return results;
-}
-
-async function appleDownload(trackUrl) {
-    const { data } = await axios.get(
-        "https://api.omegatech.app/api/Search/Applemusic",
-        {
-            params: { action: "download", url: trackUrl },
-            timeout: 60000,
-            headers: { "User-Agent": "VENOM-X" }
-        }
-    );
-
-    if (!data || data.success === false) {
-        throw new Error((data && (data.error || data.message)) || "Download failed");
-    }
-
-    const d = data.data || data.result || data;
-    const audioUrl =
-        d.downloadUrl ||
-        d.download_url ||
-        d.url ||
-        d.link ||
-        d.audio ||
-        d.dl ||
-        (d.data && (d.data.downloadUrl || d.data.url || d.data.link));
-
-    if (!audioUrl) throw new Error("No downloadUrl in response");
-
-    return {
-        audioUrl: audioUrl,
-        title: d.title || null,
-        artist: d.artist || null,
-        cover: d.cover || d.image || null
-    };
-}
-
-async function downloadBuffer(url) {
-    const res = await axios.get(url, {
-        responseType: "arraybuffer",
-        timeout: 120000,
-        maxContentLength: 40 * 1024 * 1024,
-        headers: { "User-Agent": UA, Accept: "*/*" }
+async function searchApple(query) {
+    const url =
+        "https://api.omegatech.app/api/Search/Applemusic?action=search&query=" +
+        encodeURIComponent(query);
+    const { data } = await axios.get(url, {
+        timeout: 30000,
+        headers: { "User-Agent": "VENOM-X" }
     });
-    const buf = Buffer.from(res.data);
-    if (!buf || buf.length < 1000) throw new Error("Audio file too small");
-    return buf;
+    if (!data || !data.success || !data.data || !data.data.results) {
+        return [];
+    }
+    return data.data.results;
 }
 
-async function ytFallback(query) {
-    const r = await yts(query + " audio");
-    const v = r.videos && r.videos[0];
-    if (!v) throw new Error("No YouTube fallback");
-    return {
-        title: v.title,
-        url: v.url,
-        thumbnail: v.thumbnail
-    };
+async function downloadApple(query, songUrl) {
+    const url =
+        "https://api.omegatech.app/api/Search/Applemusic?action=download&query=" +
+        encodeURIComponent(query) +
+        "&url=" +
+        encodeURIComponent(songUrl);
+    const { data } = await axios.get(url, {
+        timeout: 90000,
+        headers: { "User-Agent": "VENOM-X" }
+    });
+    if (!data || !data.success) {
+        throw new Error("Download API failed");
+    }
+    const audioUrl =
+        data.data?.downloadUrl ||
+        data.downloadUrl ||
+        data.data?.url ||
+        data.url;
+    if (!audioUrl) throw new Error("No download URL in response");
+    return audioUrl;
 }
 
 module.exports = {
     name: "play",
-    aliases: ["song", "music", "apple", "applemusic"],
+    aliases: ["apple", "song", "music"],
 
-    run: async function ({ sock, from, args, reply, message }) {
-        const p = px();
+    run: async function ({ sock, from, sender, args, reply, message }) {
+        const prefix = px();
         const text = (args || []).join(" ").trim();
 
         if (!text) {
             return reply(
-"╭━━〔 🎵 VENOM X PLAY 〕━━⬣\n" +
-"┃\n" +
-"┃ Usage:\n" +
-"┃ " + p + "play <song name>\n" +
-"┃ " + p + "play Alone\n" +
-"┃ " + p + "play Alone 2\n" +
-"┃\n" +
-"┃ Source: Apple Music search\n" +
-"┃\n" +
-"╰━━━━━━━━━━━━━━━━⬣"
+`╭━━〔 🎵 VENOM X PLAY 〕━━⬣
+┃
+┃ Apple Music search & download
+┃
+┃ Search:
+┃ ${prefix}play Alone
+┃ ${prefix}play Marshmello Alone
+┃
+┃ Download result #:
+┃ ${prefix}play Alone 2
+┃
+╰━━━━━━━━━━━━━━━━⬣`
             );
         }
 
         const parts = text.split(/\s+/);
         const last = parts[parts.length - 1];
-        const pick = /^\d+$/.test(last) ? parseInt(last, 10) : 1;
-        const query = /^\d+$/.test(last) ? parts.slice(0, -1).join(" ") : text;
+        const isNum = /^\d+$/.test(last);
 
-        if (!query) return reply("❌ Song name required.");
+        // ── DOWNLOAD by number ────────────────────────────
+        if (isNum && parts.length >= 2) {
+            const query = parts.slice(0, -1).join(" ");
+            const num = parseInt(last, 10);
+            return handleDownload(sock, from, sender, message, reply, query, num);
+        }
+
+        // ── SEARCH ────────────────────────────────────────
+        await reply("🔍 Searching Apple Music for: *" + text + "*...");
 
         try {
-            await reply("🔍 Searching Apple Music: *" + query + "*");
-
-            const results = await appleSearch(query);
-            const index = Math.min(Math.max(pick, 1), results.length) - 1;
-            const track = results[index];
-
-            const title = track.title || query;
-            const artist = track.artist || "Unknown";
-            const cover = track.cover || null;
-            const trackUrl = track.url;
-
-            // show choices if user didn't pick a number and many results
-            if (!/^\d+$/.test(last) && results.length > 1) {
-                let list =
-"╭━━〔 🎵 RESULTS 〕━━⬣\n" +
-"┃ Query: " + query + "\n" +
-"┃\n";
-                for (let i = 0; i < Math.min(results.length, 5); i++) {
-                    const r = results[i];
-                    list +=
-                        "┃ " +
-                        (i + 1) +
-                        ". " +
-                        (r.title || "?") +
-                        " — " +
-                        (r.artist || "?") +
-                        "\n";
-                }
-                list +=
-"┃\n" +
-"┃ Pick:\n" +
-"┃ " + p + "play " + query + " 2\n" +
-"┃\n" +
-"┃ Downloading #1...\n" +
-"╰━━━━━━━━━━━━━━━━⬣";
-                await reply(list);
+            const results = await searchApple(text);
+            if (!results.length) {
+                return reply("❌ No results for *" + text + "* on Apple Music.");
             }
 
-            await reply("⬇️ Downloading: *" + title + "* — *" + artist + "*");
+            searchCache.set(sender, {
+                results: results,
+                query: text,
+                timestamp: Date.now()
+            });
 
-            let audioBuf = null;
-            let source = "apple";
-            let finalTitle = title;
-            let finalArtist = artist;
-            let finalCover = cover;
+            const show = results.slice(0, 5);
+            let body =
+                "╭━━〔 🎵 APPLE MUSIC 〕━━⬣\n┃\n" +
+                "┃ 🔎 *" +
+                text +
+                "*\n" +
+                "┃ 📦 " +
+                results.length +
+                " result(s)\n┃\n";
 
-            // 1) OmegaTech Apple download
-            try {
-                if (!trackUrl) throw new Error("No Apple track url");
-                const dl = await appleDownload(trackUrl);
-                audioBuf = await downloadBuffer(dl.audioUrl);
-                if (dl.title) finalTitle = dl.title;
-                if (dl.artist) finalArtist = dl.artist;
-                if (dl.cover) finalCover = dl.cover;
-            } catch (e1) {
-                console.log("APPLE DL FAIL:", e1.message);
-
-                // 2) iTunes preview fallback (30s) — reliable on Render
-                try {
-                    const it = await axios.get("https://itunes.apple.com/search", {
-                        params: {
-                            term: title + " " + artist,
-                            media: "music",
-                            entity: "song",
-                            limit: 1
-                        },
-                        timeout: 12000,
-                        headers: { "User-Agent": UA }
-                    });
-                    const t = it.data && it.data.results && it.data.results[0];
-                    if (t && t.previewUrl) {
-                        audioBuf = await downloadBuffer(t.previewUrl);
-                        source = "itunes-preview";
-                        if (t.artworkUrl100) {
-                            finalCover = String(t.artworkUrl100).replace(
-                                "100x100bb",
-                                "600x600bb"
-                            );
-                        }
-                    } else {
-                        throw new Error("No iTunes preview");
-                    }
-                } catch (e2) {
-                    throw new Error(
-                        "Apple download failed (" +
-                            e1.message +
-                            "). Preview also failed (" +
-                            e2.message +
-                            ")."
-                    );
-                }
+            for (let i = 0; i < show.length; i++) {
+                const s = show[i];
+                body +=
+                    "┃ *" +
+                    (i + 1) +
+                    ".* " +
+                    (s.title || "Unknown") +
+                    "\n" +
+                    "┃ 🎤 " +
+                    (s.artist || "Unknown") +
+                    (s.explicit ? " 🔞" : "") +
+                    "\n┃\n";
             }
 
-            const caption =
-"╭━━〔 🎵 VENOM X PLAY 〕━━⬣\n" +
-"┃ 🎧 " + finalTitle + "\n" +
-"┃ 👤 " + finalArtist + "\n" +
-"┃ 📡 " + source + "\n" +
-(source === "itunes-preview"
-    ? "┃ ⚠️ 30s preview (full dl blocked)\n"
-    : "") +
-(trackUrl ? "┃ 🔗 Apple Music track\n" : "") +
-"╰━━━━━━━━━━━━━━━━⬣";
+            body +=
+                "┃ Download:\n┃ " +
+                prefix +
+                "play " +
+                text +
+                " 1\n" +
+                "╰━━━━━━━━━━━━━━━━⬣";
 
-            if (finalCover) {
+            const cover = show[0] && show[0].cover;
+            if (cover) {
                 try {
-                    const img = await axios.get(finalCover, {
-                        responseType: "arraybuffer",
-                        timeout: 15000,
-                        headers: { "User-Agent": UA }
-                    });
                     await sock.sendMessage(
                         from,
-                        { image: Buffer.from(img.data), caption: caption },
+                        { image: { url: cover }, caption: body },
                         { quoted: message }
                     );
-                } catch (e) {
-                    await reply(caption);
-                }
-            } else {
-                await reply(caption);
+                    return;
+                } catch (e) {}
             }
 
-            try {
-                await sock.sendMessage(
-                    from,
-                    {
-                        audio: audioBuf,
-                        mimetype: "audio/mpeg",
-                        fileName: String(finalTitle).slice(0, 40) + ".mp3",
-                        ptt: false
-                    },
-                    { quoted: message }
-                );
-            } catch (e) {
-                await sock.sendMessage(
-                    from,
-                    {
-                        document: audioBuf,
-                        mimetype: "audio/mpeg",
-                        fileName: String(finalTitle).slice(0, 40) + ".mp3",
-                        caption: "🎵 " + finalTitle
-                    },
-                    { quoted: message }
-                );
-            }
+            return reply(body);
         } catch (err) {
-            console.log("PLAY ERROR:", err.message || err);
+            console.log("PLAY SEARCH ERROR:", err.message);
             return reply(
-"╭━━〔 ❌ PLAY FAILED 〕━━⬣\n" +
-"┃\n" +
-"┃ " + String(err.message || err).slice(0, 280) + "\n" +
-"┃\n" +
-"╰━━━━━━━━━━━━━━━━⬣"
+                "❌ Apple Music search failed:\n" +
+                    String(err.message || err).slice(0, 200)
             );
         }
     }
 };
+
+async function handleDownload(sock, from, sender, message, reply, query, num) {
+    const key = String(sender) + "|" + query + "|" + num;
+    if (activeDownloads.has(key)) {
+        return reply("⏳ Download already in progress...");
+    }
+    activeDownloads.add(key);
+
+    try {
+        let cache = searchCache.get(sender);
+        let results = (cache && cache.results) || [];
+        let searchQuery = (cache && cache.query) || query;
+
+        if (
+            !cache ||
+            !results.length ||
+            Date.now() - (cache.timestamp || 0) > CACHE_MS
+        ) {
+            results = await searchApple(query);
+            if (!results.length) {
+                return reply("❌ No results for *" + query + "*.");
+            }
+            searchQuery = query;
+            searchCache.set(sender, {
+                results: results,
+                query: query,
+                timestamp: Date.now()
+            });
+        }
+
+        const song = results[num - 1];
+        if (!song) {
+            return reply("❌ Song #" + num + " not found. Search again.");
+        }
+
+        if (!song.url) {
+            return reply("❌ Missing Apple Music URL for that track.");
+        }
+
+        await reply(
+            "⬇️ Downloading:\n*" +
+                (song.title || "Track") +
+                "* — " +
+                (song.artist || "") +
+                "\n⏳ Please wait..."
+        );
+
+        const audioUrl = await downloadApple(searchQuery, song.url);
+
+        const title = song.title || "track";
+        const artist = song.artist || "";
+
+        // Prefer buffer (more reliable than url on some hosts)
+        let audioPayload = { url: audioUrl };
+        try {
+            const bin = await axios.get(audioUrl, {
+                responseType: "arraybuffer",
+                timeout: 120000,
+                maxContentLength: 40 * 1024 * 1024,
+                headers: { "User-Agent": "VENOM-X" }
+            });
+            const buf = Buffer.from(bin.data);
+            if (buf.length > 1000) audioPayload = buf;
+        } catch (e) {
+            console.log("PLAY buffer fallback to url:", e.message);
+        }
+
+        await sock.sendMessage(
+            from,
+            {
+                audio: audioPayload,
+                mimetype: "audio/mpeg",
+                ptt: false,
+                fileName: String(title).slice(0, 60) + ".mp3"
+            },
+            { quoted: message }
+        );
+
+        await reply(
+            "✅ *Download complete*\n🎵 " + title + " — " + artist
+        );
+
+        searchCache.delete(sender);
+    } catch (err) {
+        console.log("PLAY DOWNLOAD ERROR:", err.message);
+        return reply(
+            "❌ Download failed:\n" + String(err.message || err).slice(0, 250)
+        );
+    } finally {
+        activeDownloads.delete(key);
+    }
+}

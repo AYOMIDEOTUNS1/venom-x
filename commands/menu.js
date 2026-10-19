@@ -83,7 +83,7 @@ const categories = {
     "🧠 AI": [
         "ai", "ask", "venomai", "gpt", "nano", "secret",
         "translate", "rewrite", "summarize", "code",
-        "define", "wiki", "summary"
+        "define", "wiki", "deepseek",  "summary"
     ],
     "🎨 IMAGE": [
         "hd", "tohd", "sticker", "s", "toimg", "tovid", "cropsticker",
@@ -98,7 +98,7 @@ const categories = {
     "📥 DOWNLOADS": [
         "tiktok", "tt", "ytmp3", "ytmp4", "ig", "instagram",
         "fb", "facebook", "play", "spotify", "mediafire",
-        "vv", "vv2", "tiktokboost", "ttstalk"
+        "vv", "vv2", "tiktokboost", "ttstalk", "web2apk"
     ],
     "🎵 MUSIC / AUDIO": [
         "play", "song", "music", "spotify", "ytmp3", "tomp3",
@@ -151,7 +151,7 @@ const categories = {
     "👑 OWNER": [
         "public", "private", "shutdown", "update", "block",
         "unblock", "sudo", "leave", "reset", "ban", "unban",
-        "setfullpfp", "pair"
+        "setfullpfp", "pair", "getpp"
     ]
 };
 
