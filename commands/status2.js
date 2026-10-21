@@ -2,14 +2,14 @@
 
 /**
  * VENOM X — Group Status V2
- * list | multi-group | text/image/video
- * Fixed: owner detection in groups (LID) + group posting
+ * list | multi-group | colors | text/image/video
+ * Media via downloadContentFromMessage (no stanzaId required)
  */
 
 const fs = require("fs");
 const path = require("path");
 const {
-    downloadMediaMessage,
+    downloadContentFromMessage,
     generateWAMessageFromContent,
     prepareWAMessageMedia,
     jidNormalizedUser
@@ -186,6 +186,14 @@ function unwrapMessage(message) {
     if (!message) return null;
     let current = message;
     for (let i = 0; i < 6; i++) {
+        if (
+            current.imageMessage ||
+            current.videoMessage ||
+            current.conversation ||
+            current.extendedTextMessage
+        ) {
+            break;
+        }
         const next =
             current.ephemeralMessage?.message ||
             current.viewOnceMessage?.message ||
@@ -216,8 +224,12 @@ function getQuotedMessage(message) {
 function getMedia(message) {
     const current = unwrapMessage(message);
     if (!current) return null;
-    if (current.imageMessage) return { type: "image", message: current.imageMessage };
-    if (current.videoMessage) return { type: "video", message: current.videoMessage };
+    if (current.imageMessage) {
+        return { type: "image", message: current.imageMessage };
+    }
+    if (current.videoMessage) {
+        return { type: "video", message: current.videoMessage };
+    }
     return null;
 }
 
@@ -235,18 +247,28 @@ function getText(message) {
 }
 
 function getSenderJid(sock) {
-    if (!sock?.user?.id) throw new Error("Bot WhatsApp identity is unavailable.");
+    if (!sock?.user?.id) {
+        throw new Error("Bot WhatsApp identity is unavailable.");
+    }
     return jidNormalizedUser(sock.user.id);
 }
 
 function buildTextStatusContext(senderJid) {
     return {
         forwardingScore: 0,
-        featureEligibilities: { canBeReshared: true, canReceiveMultiReact: true },
+        featureEligibilities: {
+            canBeReshared: true,
+            canReceiveMultiReact: true
+        },
         pairedMediaType: 0,
         statusSourceType: 4,
         isGroupStatus: true,
-        statusAttributions: [{ type: 6, groupStatus: { authorJid: senderJid } }],
+        statusAttributions: [
+            {
+                type: 6,
+                groupStatus: { authorJid: senderJid }
+            }
+        ],
         statusAudienceMetadata: {
             audienceType: 1,
             listEmoji: "⚡",
@@ -258,7 +280,10 @@ function buildTextStatusContext(senderJid) {
 function buildMediaStatusContext() {
     return {
         forwardingScore: 0,
-        featureEligibilities: { canBeReshared: true, canReceiveMultiReact: true },
+        featureEligibilities: {
+            canBeReshared: true,
+            canReceiveMultiReact: true
+        },
         pairedMediaType: 0,
         statusSourceType: 4,
         isGroupStatus: true,
@@ -272,8 +297,12 @@ function buildMediaStatusContext() {
 }
 
 async function sendGroupTextStatus(sock, groupJid, text, colorName) {
-    if (!text || !String(text).trim()) throw new Error("Status text is empty.");
-    if (!groupJid.endsWith("@g.us")) throw new Error("Target must be a group JID.");
+    if (!text || !String(text).trim()) {
+        throw new Error("Status text is empty.");
+    }
+    if (!groupJid.endsWith("@g.us")) {
+        throw new Error("Target must be a group JID.");
+    }
 
     const senderJid = getSenderJid(sock);
     const bg =
@@ -315,7 +344,9 @@ async function sendGroupMediaStatus(
     originalMimetype
 ) {
     if (!buffer || !buffer.length) throw new Error("Media buffer is empty.");
-    if (!groupJid.endsWith("@g.us")) throw new Error("Target must be a group JID.");
+    if (!groupJid.endsWith("@g.us")) {
+        throw new Error("Target must be a group JID.");
+    }
     if (type !== "image" && type !== "video") {
         throw new Error("Unsupported media type: " + type);
     }
@@ -371,33 +402,36 @@ async function sendGroupMediaStatus(
     return generated.key.id;
 }
 
-async function downloadQuotedMedia(message, from, quoted) {
-    const contextInfo = getQuotedContext(message);
-    if (!contextInfo?.stanzaId) {
-        throw new Error("Could not identify the replied message.");
+/** No stanzaId required — uses quoted media payload directly */
+async function downloadQuotedMedia(quoted) {
+    const current = unwrapMessage(quoted);
+    if (!current) throw new Error("Reply to an image or video.");
+
+    let type = null;
+    let mediaMsg = null;
+    if (current.imageMessage) {
+        type = "image";
+        mediaMsg = current.imageMessage;
+    } else if (current.videoMessage) {
+        type = "video";
+        mediaMsg = current.videoMessage;
     }
 
-    const buffer = await downloadMediaMessage(
-        {
-            key: {
-                remoteJid: from,
-                id: contextInfo.stanzaId,
-                participant: contextInfo.participant,
-                fromMe: false
-            },
-            message: quoted
-        },
-        "buffer",
-        {},
-        {}
-    );
+    if (!type || !mediaMsg) {
+        throw new Error("Reply to an image or video.");
+    }
 
-    if (!buffer || !buffer.length) throw new Error("Downloaded media is empty.");
-    return buffer;
+    const stream = await downloadContentFromMessage(mediaMsg, type);
+    const chunks = [];
+    for await (const chunk of stream) {
+        chunks.push(chunk);
+    }
+    const buffer = Buffer.concat(chunks);
+    if (!buffer.length) throw new Error("Downloaded media is empty.");
+    return { buffer: buffer, type: type, mimetype: mediaMsg.mimetype || "" };
 }
 
 function resolveTargets(groups, numbers, currentFrom) {
-    // no numbers → current group if in a group
     if (!numbers.length) {
         if (currentFrom && currentFrom.endsWith("@g.us")) return [currentFrom];
         return [];
@@ -444,7 +478,6 @@ module.exports = {
         const prefix = px();
         const sub = String(args[0] || "").toLowerCase();
 
-        // LIST works anywhere
         if (sub === "list" || sub === "groups" || sub === "ls") {
             try {
                 await reply("⏳ Loading groups...");
@@ -478,8 +511,8 @@ module.exports = {
 `╭━━〔 📢 VENOM GCSTATUS 〕━━⬣
 ┃
 ┃ ${prefix}gcstatus list
-┃ ${prefix}gcstatus Hello          (this group)
-┃ ${prefix}gcstatus 1 3 Hello      (multi)
+┃ ${prefix}gcstatus Hello
+┃ ${prefix}gcstatus 1 3 Hello
 ┃ ${prefix}gcstatus 2 blue Hi
 ┃ Reply media + ${prefix}gcstatus
 ┃
@@ -494,17 +527,13 @@ module.exports = {
 
             if (!targetJids.length) {
                 return reply(
-                    "❌ No group target.\n" +
-                        "• Use inside a group: `" +
+                    "❌ No group target.\n• Inside a group: `" +
                         prefix +
-                        "gcstatus Hello`\n" +
-                        "• Or pick numbers: `" +
+                        "gcstatus Hello`\n• Or: `" +
                         prefix +
                         "gcstatus list`"
                 );
             }
-
-            console.log("[GCSTATUS] targets:", targetJids.join(", "));
 
             const quoted = getQuotedMessage(message);
 
@@ -518,11 +547,14 @@ module.exports = {
                             targetJids.length +
                             "* status..."
                     );
-                    const buffer = await downloadQuotedMedia(message, from, quoted);
-                    const caption = parsed.text || media.message?.caption || "";
+
+                    const dl = await downloadQuotedMedia(quoted);
+                    const caption =
+                        parsed.text || media.message?.caption || "";
                     const mimetype =
+                        dl.mimetype ||
                         media.message?.mimetype ||
-                        (media.type === "image" ? "image/jpeg" : "video/mp4");
+                        (dl.type === "image" ? "image/jpeg" : "video/mp4");
 
                     let ok = 0;
                     let fail = 0;
@@ -533,8 +565,8 @@ module.exports = {
                             await sendGroupMediaStatus(
                                 sock,
                                 targetJids[i],
-                                media.type,
-                                buffer,
+                                dl.type,
+                                dl.buffer,
                                 caption,
                                 mimetype
                             );
@@ -542,7 +574,11 @@ module.exports = {
                         } catch (e) {
                             fail++;
                             errors.push(String(e.message || e).slice(0, 80));
-                            console.log("[GCSTATUS] media fail", targetJids[i], e.message);
+                            console.log(
+                                "[GCSTATUS] media fail",
+                                targetJids[i],
+                                e.message
+                            );
                         }
                         if (targetJids.length > 1) {
                             await new Promise(function (r) {
@@ -589,7 +625,11 @@ module.exports = {
                 } catch (e) {
                     fail++;
                     errors.push(String(e.message || e).slice(0, 80));
-                    console.log("[GCSTATUS] text fail", targetJids[i], e.message);
+                    console.log(
+                        "[GCSTATUS] text fail",
+                        targetJids[i],
+                        e.message
+                    );
                 }
                 if (targetJids.length > 1) {
                     await new Promise(function (r) {

@@ -1,26 +1,31 @@
+"use strict";
+
+/**
+ * VENOM X Menu — full command list from project
+ * #menu / #m  → image + stats + LIST
+ * #menu all   → everything
+ * #menu ai    → one category
+ */
+
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
+const {
+    generateWAMessageFromContent,
+    prepareWAMessageMedia
+} = require("@whiskeysockets/baileys");
+const { getSettings } = require("../lib/settingsCache");
 
-const SETTINGS_FILE = path.join(__dirname, "..", "settings.json");
 const menuImageDir = path.join(__dirname, "../media/menu");
 
-let menuImages = [];
-
-function getSettings() {
-    try {
-        return JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf8"));
-    } catch (e) {
-        return {};
-    }
+function px(settings) {
+    return (settings && settings.prefix) || "#";
 }
 
-function loadMenuImages() {
+function loadImages() {
     try {
-        if (!fs.existsSync(menuImageDir)) {
-            menuImages = [];
-            return;
-        }
-        menuImages = fs
+        if (!fs.existsSync(menuImageDir)) return [];
+        return fs
             .readdirSync(menuImageDir)
             .filter(function (f) {
                 return /\.(jpg|jpeg|png|webp)$/i.test(f);
@@ -28,22 +33,15 @@ function loadMenuImages() {
             .map(function (f) {
                 return path.join(menuImageDir, f);
             });
-        console.log("🖼️ Menu images:", menuImages.length);
     } catch (e) {
-        menuImages = [];
+        return [];
     }
 }
-loadMenuImages();
 
-function pickRandomImage() {
-    if (!menuImages.length) loadMenuImages();
-    if (!menuImages.length) return null;
-    // prefer sukuna if present
-    const sukuna = menuImages.find(function (p) {
-        return /sukuna/i.test(path.basename(p));
-    });
-    if (sukuna) return sukuna;
-    return menuImages[Math.floor(Math.random() * menuImages.length)];
+function pickImage() {
+    const imgs = loadImages();
+    if (!imgs.length) return null;
+    return imgs[Math.floor(Math.random() * imgs.length)];
 }
 
 function getTimeInfo() {
@@ -72,180 +70,682 @@ function getTimeInfo() {
             hour12: false
         }).format(now)
     );
-    let greeting = "Good night";
-    if (hour >= 5 && hour < 12) greeting = "Good morning";
-    else if (hour >= 12 && hour < 17) greeting = "Good afternoon";
-    else if (hour >= 17 && hour < 22) greeting = "Good evening";
-    return { time: time, day: day, date: date, greeting: greeting };
+    let greet = "Hello";
+    if (hour >= 5 && hour < 12) greet = "Good morning";
+    else if (hour >= 12 && hour < 17) greet = "Good afternoon";
+    else if (hour >= 17 && hour < 22) greet = "Good evening";
+    else greet = "Good night";
+    return { time: time, day: day, date: date, greet: greet };
 }
 
-const categories = {
-    "🧠 AI": [
-        "ai", "ask", "venomai", "gpt", "nano", "secret",
-        "translate", "rewrite", "summarize", "code",
-        "define", "wiki", "deepseek",  "summary"
-    ],
-    "🎨 IMAGE": [
-        "hd", "tohd", "sticker", "s", "toimg", "tovid", "cropsticker",
-        "getpp", "stickerpack", "take", "steal", "takeall",
-        "animepic", "pint", "pinterest", "wallpaper", "character",
-        "blur", "removebg", "wanted"
-    ],
-    "🔞 NSFW": [
-        "xv", "xvphoto", "xnxx", "ass", "boobs", "hentai",
-        "waifu", "neko", "pussy", "mature", "deepnude"
-    ],
-    "📥 DOWNLOADS": [
-        "tiktok", "tt", "ytmp3", "ytmp4", "ig", "instagram",
-        "fb", "facebook", "play", "spotify", "mediafire",
-        "vv", "vv2", "tiktokboost", "ttstalk", "web2apk"
-    ],
-    "🎵 MUSIC / AUDIO": [
-        "play", "song", "music", "spotify", "ytmp3", "tomp3",
-        "bass", "reverse", "tts"
-    ],
-    "👥 GROUP": [
-        "tagall", "hidetag", "kick", "add", "promote", "demote",
-        "warn", "warnings", "delwarn", "resetwarn",
-        "antilink", "antichannelmessage", "antistatustag",
-        "welcome", "goodbye", "open", "close", "groupinfo",
-        "invite", "grouplink", "revoke", "resetlink", "grouppfp",
-        "status2", "gcstatus", "leave", "antigroupstatus"
-    ],
-    "💰 ECONOMY": [
-        "bal", "daily", "weekly", "monthly", "work", "deposit",
-        "withdraw", "pay", "rob", "jail", "bail", "escape",
-        "economy", "bank", "bankupgrade", "market", "aza",
-        "lb", "glb", "resetgame"
-    ],
-    "🎮 GAMES": [
-        "coinflip", "cf", "slots", "guess", "blackjack", "bj",
-        "dice", "rps", "battle", "duel", "accept",
-        "wordchain", "wc", "bird", "flap", "snake", "ttt",
-        "hangman", "hack"
-    ],
-    "😝 FUN MENU": [
-        "fun", "funextra", "truth", "dare", "truthdare",
-        "roast", "compliment", "flirt", "joke", "quote",
-        "insult", "riddle", "ship", "pick", "couple",
-        "meme", "nmeme", "style", "wouldyou", "dadjoke",
-        "funfact", "advice", "rate",
-        "ronaldo", "elonmusk", "therock", "zuck",
-        "tiktok-girl", "korean-girl", "japan-girl",
-        "itadori", "waifu", "neko"
-    ],
-    "✨ ANIME": [
-        "anime", "animelovers", "animepic", "waifu", "neko",
-        "itadori", "quoteanime"
-    ],
-    "🛠️ TOOLS": [
-        "get", "url", "github", "web2apk", "reactch", "getjid",
-        "whoami", "vcf", "save", "pair", "setfullpfp",
-        "ban", "unban"
-    ],
-    "⚙️ UTILITY": [
-        "ping", "p", "alive", "uptime", "up", "menu", "m", "help",
-        "owner", "profile", "info", "delete", "del",
-        "autoreact", "refresh", "sleep"
-    ],
-    "👑 OWNER": [
-        "public", "private", "shutdown", "update", "block",
-        "unblock", "sudo", "leave", "reset", "ban", "unban",
-        "setfullpfp", "pair", "getpp"
-    ]
+function formatBytes(n) {
+    n = Number(n) || 0;
+    if (n < 1024) return n + " B";
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+    if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + " MB";
+    return (n / (1024 * 1024 * 1024)).toFixed(2) + " GB";
+}
+
+function formatUptime(sec) {
+    sec = Math.floor(Number(sec) || 0);
+    const d = Math.floor(sec / 86400);
+    const h = Math.floor((sec % 86400) / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = sec % 60;
+    if (d > 0) return d + "d " + h + "h " + m + "m";
+    if (h > 0) return h + "h " + m + "m " + s + "s";
+    if (m > 0) return m + "m " + s + "s";
+    return s + "s";
+}
+
+function getSystemStats() {
+    const totalMem = os.totalmem();
+    const freeMem = os.freemem();
+    const usedMem = totalMem - freeMem;
+    const memPct = totalMem ? Math.round((usedMem / totalMem) * 100) : 0;
+    let load = "n/a";
+    try {
+        const la = os.loadavg();
+        if (la && la.length) {
+            load =
+                la[0].toFixed(2) +
+                " / " +
+                la[1].toFixed(2) +
+                " / " +
+                la[2].toFixed(2);
+        }
+    } catch (e) {}
+    let botMem = "n/a";
+    try {
+        const mu = process.memoryUsage();
+        botMem =
+            "Heap " +
+            formatBytes(mu.heapUsed) +
+            " / RSS " +
+            formatBytes(mu.rss);
+    } catch (e) {}
+    return {
+        platform: os.platform() + " · " + os.arch(),
+        cpus: (os.cpus() || []).length || 1,
+        load: load,
+        ram:
+            formatBytes(usedMem) +
+            " / " +
+            formatBytes(totalMem) +
+            " (" +
+            memPct +
+            "%)",
+        botMem: botMem,
+        uptime: formatUptime(process.uptime()),
+        node: process.version
+    };
+}
+
+// ── Categories from your commands/ folder ─────────────────
+const CATEGORIES = {
+    ai: {
+        title: "🧠 AI",
+        desc: "Chat, nano, deepseek",
+        cmds: [
+            "ai",
+            "deepseek",
+            "nano",
+            "secret",
+            "translate",
+            "tools"
+        ]
+    },
+    image: {
+        title: "🎨 Image / Sticker",
+        desc: "HD, sticker, convert",
+        cmds: [
+            "hd",
+            "sticker",
+            "stickerpack",
+            "toimg",
+            "tovid",
+            "take",
+            "takeall",
+            "cropsticker",
+            "blur",
+            "pint",
+            "getpp",
+            "animepic",
+            "url"
+        ]
+    },
+    nsfw: {
+        title: "🔞 NSFW",
+        desc: "Adult content",
+        cmds: [
+            "xv",
+            "xvphoto",
+            "xnxx",
+            "deepnude",
+            "mature"
+        ]
+    },
+    download: {
+        title: "📥 Downloads",
+        desc: "Music & social media",
+        cmds: [
+            "play",
+            "spotify",
+            "tiktok",
+            "ttstalk",
+            "tiktokboost",
+            "ytmp3",
+            "ytmp4",
+            "ig",
+            "instagram",
+            "fb",
+            "facebook",
+            "mediafire",
+            "vv",
+            "vv2"
+        ]
+    },
+    audio: {
+        title: "🎵 Audio",
+        desc: "Effects & voice",
+        cmds: ["play", "tomp3", "bass", "reverse", "tts"]
+    },
+    group: {
+        title: "👥 Group",
+        desc: "Admin & protection",
+        cmds: [
+            "tagall",
+            "hidetag",
+            "kick",
+            "add",
+            "promote",
+            "demote",
+            "warn",
+            "warnings",
+            "delwarn",
+            "resetwarn",
+            "antilink",
+            "antichannelmessage",
+            "antistatustag",
+            "antigroupstatus",
+            "welcome",
+            "goodbye",
+            "open",
+            "close",
+            "groupinfo",
+            "invite",
+            "revoke",
+            "grouppfp",
+            "status2",
+            "gcstatus",
+            "adminonly",
+            "approveall",
+            "leave"
+        ]
+    },
+    economy: {
+        title: "💰 Economy",
+        desc: "Money & market",
+        cmds: [
+            "bal",
+            "bank",
+            "bankupgrade",
+            "daily",
+            "weekly",
+            "monthly",
+            "work",
+            "deposit",
+            "withdraw",
+            "pay",
+            "rob",
+            "jail",
+            "bail",
+            "escape",
+            "economy",
+            "market",
+            "aza",
+            "lb",
+            "glb",
+            "stats",
+            "resetgame"
+        ]
+    },
+    games: {
+        title: "🎮 Games",
+        desc: "Casino & mini games",
+        cmds: [
+            "slots",
+            "dice",
+            "coinflip",
+            "coinchoice",
+            "rps",
+            "blackjack",
+            "battle",
+            "duel",
+            "duelgame",
+            "accept",
+            "guess",
+            "guessgame",
+            "wordchain",
+            "bird",
+            "snake",
+            "ttt",
+            "hangman",
+            "hack",
+            "game",
+            "games"
+        ]
+    },
+    fun: {
+        title: "😝 Fun",
+        desc: "Truth, memes, jokes",
+        cmds: [
+            "fun",
+            "funextra",
+            "truth",
+            "dare",
+            "roast",
+            "flirt",
+            "joke",
+            "ship",
+            "couple",
+            "meme",
+            "nmeme",
+            "style",
+            "hack"
+        ]
+    },
+    anime: {
+        title: "✨ Anime",
+        desc: "Anime pics & packs",
+        cmds: [
+            "anime",
+            "animelovers",
+            "animepic",
+            "telesticker"
+        ]
+    },
+    tools: {
+        title: "🛠️ Tools",
+        desc: "Utils & exports",
+        cmds: [
+            "get",
+            "url",
+            "github",
+            "pdf",
+            "extract",
+            "plugin",
+            "getcode",
+            "try",
+            "reactch",
+            "getjid",
+            "web2apk",
+            "addmeta",
+            "whoami",
+            "vcf",
+            "save",
+            "info",
+            "profile",
+            "calc"
+        ]
+    },
+    utility: {
+        title: "⚙️ Utility",
+        desc: "Bot status & helpers",
+        cmds: [
+            "ping",
+            "alive",
+            "up",
+            "menu",
+            "m",
+            "owner",
+            "delete",
+            "autoreact",
+            "refresh",
+            "sleep",
+            "pair"
+        ]
+    },
+    owner: {
+        title: "👑 Owner",
+        desc: "Privileged only",
+        cmds: [
+            "public",
+            "private",
+            "sudo",
+            "ban",
+            "unban",
+            "block",
+            "unblock",
+            "shutdown",
+            "update",
+            "reset",
+            "setfullpfp",
+            "pair",
+            "plugin",
+            "getcode",
+            "try"
+        ]
+    }
 };
 
-function buildCategory(title, names, prefix) {
-    const rows = names.map(function (name) {
-        return "┃ " + prefix + name;
-    });
+function catText(prefix, key) {
+    const c = CATEGORIES[key];
+    if (!c) return "Unknown category. Try: " + prefix + "menu all";
     return (
-        "╭━━〔 " + title + " 〕━━⬣\n" +
-        rows.join("\n") +
-        "\n╰━━━━━━━━━━━━━━━━⬣"
+        "*" +
+        c.title +
+        "*\n_" +
+        c.desc +
+        "_\n\n" +
+        c.cmds
+            .map(function (x) {
+                return "• " + prefix + x;
+            })
+            .join("\n")
     );
+}
+
+function fullText(prefix, botName, total) {
+    let out =
+        "*" +
+        botName +
+        " — ALL COMMANDS*\n" +
+        "Total keys: " +
+        total +
+        "\n\n";
+    const keys = Object.keys(CATEGORIES);
+    for (let i = 0; i < keys.length; i++) {
+        out += catText(prefix, keys[i]) + "\n\n";
+    }
+    out += "_Powered by " + botName + "_";
+    return out.trim();
+}
+
+function mentionTag(sender) {
+    if (!sender) return "@user";
+    return "@" + String(sender).split("@")[0];
+}
+
+async function sendListMenu(sock, from, message, opts) {
+    const {
+        prefix,
+        botName,
+        pushName,
+        totalCommands,
+        sender,
+        stats,
+        timeInfo
+    } = opts;
+
+    const tag = mentionTag(sender);
+
+    const bodyText =
+        timeInfo.greet +
+        ", " +
+        tag +
+        " (*" +
+        pushName +
+        "*)\n\n" +
+        "*" +
+        botName +
+        "* is online\n" +
+        "📦 Commands: *" +
+        totalCommands +
+        "*+\n" +
+        "⚡ Prefix: *" +
+        prefix +
+        "*\n\n" +
+        "🕐 " +
+        timeInfo.time +
+        " · " +
+        timeInfo.day +
+        "\n" +
+        "📆 " +
+        timeInfo.date +
+        "\n\n" +
+        "*System*\n" +
+        "🖥️ " +
+        stats.platform +
+        "\n" +
+        "🧠 CPU: " +
+        stats.cpus +
+        " cores · load " +
+        stats.load +
+        "\n" +
+        "💾 RAM: " +
+        stats.ram +
+        "\n" +
+        "📂 Bot: " +
+        stats.botMem +
+        "\n" +
+        "⏱️ Uptime: " +
+        stats.uptime +
+        "\n" +
+        "🟢 Node: " +
+        stats.node +
+        "\n\n" +
+        "Open the *list* and pick a category 👇";
+
+    const rows = [
+        {
+            header: "All",
+            title: "📋 All commands",
+            description: "Full command list",
+            id: prefix + "menu all"
+        }
+    ];
+
+    const keys = Object.keys(CATEGORIES);
+    for (let i = 0; i < keys.length; i++) {
+        const k = keys[i];
+        const c = CATEGORIES[k];
+        rows.push({
+            header: k.toUpperCase(),
+            title: c.title,
+            description: c.desc,
+            id: prefix + "menu " + k
+        });
+    }
+
+    rows.push({
+        header: "Ping",
+        title: "🏓 Ping",
+        description: "Response time",
+        id: prefix + "ping"
+    });
+    rows.push({
+        header: "Owner",
+        title: "👤 Owner",
+        description: "Bot owner info",
+        id: prefix + "owner"
+    });
+
+    const listButton = {
+        name: "single_select",
+        buttonParamsJson: JSON.stringify({
+            title: "📂 Open menu list",
+            sections: [
+                {
+                    title: botName + " categories",
+                    highlight_label: "VENOM",
+                    rows: rows
+                }
+            ]
+        })
+    };
+
+    let header = {
+        title: botName,
+        subtitle: "Select from the list",
+        hasMediaAttachment: false
+    };
+
+    try {
+        const imgPath = pickImage();
+        if (imgPath && fs.existsSync(imgPath)) {
+            const media = await prepareWAMessageMedia(
+                { image: fs.readFileSync(imgPath) },
+                { upload: sock.waUploadToServer }
+            );
+            if (media.imageMessage) {
+                header = {
+                    title: botName,
+                    subtitle: "Select from the list",
+                    hasMediaAttachment: true,
+                    imageMessage: media.imageMessage
+                };
+            }
+        }
+    } catch (e) {
+        console.log("MENU IMAGE:", e.message);
+    }
+
+    const interactiveMessage = {
+        header: header,
+        body: { text: bodyText },
+        footer: { text: "Powered by " + botName + " ⚡" },
+        contextInfo: {
+            mentionedJid: sender ? [sender] : []
+        },
+        nativeFlowMessage: {
+            buttons: [listButton],
+            messageParamsJson: ""
+        }
+    };
+
+    const msg = generateWAMessageFromContent(
+        from,
+        {
+            viewOnceMessage: {
+                message: {
+                    messageContextInfo: {
+                        deviceListMetadata: {},
+                        deviceListMetadataVersion: 2
+                    },
+                    interactiveMessage: interactiveMessage
+                }
+            }
+        },
+        { userJid: sock.user.id, quoted: message }
+    );
+
+    try {
+        if (
+            sender &&
+            msg.message?.viewOnceMessage?.message?.interactiveMessage
+        ) {
+            msg.message.viewOnceMessage.message.interactiveMessage.contextInfo =
+                { mentionedJid: [sender] };
+        }
+    } catch (e) {}
+
+    const additionalNodes = [
+        {
+            tag: "biz",
+            attrs: {},
+            content: [
+                {
+                    tag: "interactive",
+                    attrs: { type: "native_flow", v: "1" },
+                    content: [
+                        {
+                            tag: "native_flow",
+                            attrs: { v: "9", name: "mixed" },
+                            content: undefined
+                        }
+                    ]
+                }
+            ]
+        }
+    ];
+
+    if (!String(from).endsWith("@g.us")) {
+        additionalNodes.push({
+            tag: "bot",
+            attrs: { biz_bot: "1" },
+            content: undefined
+        });
+    }
+
+    await sock.relayMessage(from, msg.message, {
+        messageId: msg.key.id,
+        additionalNodes: additionalNodes
+    });
 }
 
 module.exports = {
     name: "menu",
-    aliases: ["m", "help", "list"],
+    aliases: ["m", "help", "list", "commands"],
 
-    run: async function ({ sock, from, sender, message, settings }) {
+    run: async function ({
+        sock,
+        from,
+        sender,
+        args,
+        message,
+        reply,
+        settings
+    }) {
         const conf = settings || getSettings();
-        const prefix = conf.prefix || "#";
-        const ownerName = conf.ownerName || "AYOMIDE";
+        const prefix = px(conf);
         const botName = conf.botName || "VENOM X";
-        const mode = String(conf.mode || "public").toUpperCase();
         const timeInfo = getTimeInfo();
+        const stats = getSystemStats();
+
+        let pushName = "User";
+        try {
+            pushName =
+                message.pushName ||
+                String(sender || "").split("@")[0] ||
+                "User";
+        } catch (e) {}
 
         let totalCommands = 0;
         try {
-            if (typeof sock.getCommands === "function") {
-                totalCommands = sock.getCommands().size || 0;
-            }
+            if (sock.getCommands) totalCommands = sock.getCommands().size;
         } catch (e) {}
 
-        const mention = sender || from;
-        const tag = "@" + String(mention).split("@")[0];
+        const sub = String(args[0] || "").toLowerCase();
 
-        const sections = Object.keys(categories).map(function (title) {
-            return buildCategory(title, categories[title], prefix);
-        });
+        if (sub === "all" || sub === "full") {
+            return sock.sendMessage(
+                from,
+                {
+                    text: fullText(prefix, botName, totalCommands || "150"),
+                    mentions: sender ? [sender] : []
+                },
+                { quoted: message }
+            );
+        }
 
-        const menuText =
-            "╭━━〔 🤖 " + botName + " MENU 〕━━⬣\n" +
-            "┃ 👋 " + timeInfo.greeting + ", " + tag + "!\n" +
-            "┃\n" +
-            "┃ 👑 Owner : " + ownerName + "\n" +
-            "┃ 🌍 Mode : " + mode + "\n" +
-            "┃ ⚡ Prefix : " + prefix + "\n" +
-            "┃ 🤖 Version : " + (conf.version || "3.0.0") + "\n" +
-            "┃ 🚀 Status : ONLINE\n" +
-            "┃ 📦 Commands : " + totalCommands + "\n" +
-            "┃\n" +
-            "┃ 🕐 Time : " + timeInfo.time + "\n" +
-            "┃ 📅 Day : " + timeInfo.day + "\n" +
-            "┃ 📆 Date : " + timeInfo.date + "\n" +
-            "╰━━━━━━━━━━━━━━━━⬣\n\n" +
-            sections.join("\n\n") +
-            "\n\n" +
-            "╭━━〔 📖 HELP 〕━━⬣\n" +
-            "┃ 💡 " + prefix + "info <command>\n" +
-            "┃ 💡 " + prefix + "menu\n" +
-            "┃ 💡 " + prefix + "m\n" +
-            "╰━━━━━━━━━━━━━━━━⬣\n\n" +
-            "╭━━〔 💀 " + botName + " 〕━━⬣\n" +
-            "┃ 📦 Total Commands : " + totalCommands + "\n" +
-            "┃ 🎮 Economy · Games · Fun · Tools\n" +
-            "┃ Powered By VENOM X\n" +
-            "╰━━━━━━━━━━━━━━━━⬣";
-
-        const selectedImage = pickRandomImage();
-        const payload = {
-            text: menuText,
-            mentions: mention ? [mention] : []
-        };
+        if (CATEGORIES[sub]) {
+            return sock.sendMessage(
+                from,
+                {
+                    text: catText(prefix, sub),
+                    mentions: sender ? [sender] : []
+                },
+                { quoted: message }
+            );
+        }
 
         try {
-            if (selectedImage && fs.existsSync(selectedImage)) {
-                await sock.sendMessage(
-                    from,
-                    {
-                        image: fs.readFileSync(selectedImage),
-                        caption: menuText,
-                        mentions: mention ? [mention] : []
-                    },
-                    { quoted: message }
-                );
-            } else {
-                console.log("⚠️ No menu image found in media/menu");
-                await sock.sendMessage(from, payload, { quoted: message });
-            }
-        } catch (e) {
-            console.log("MENU SEND ERROR:", e.message);
-            await sock
-                .sendMessage(from, payload, { quoted: message })
-                .catch(function () {});
+            await sendListMenu(sock, from, message, {
+                prefix: prefix,
+                botName: botName,
+                pushName: pushName,
+                totalCommands: totalCommands || "150",
+                sender: sender,
+                stats: stats,
+                timeInfo: timeInfo
+            });
+        } catch (err) {
+            console.log("MENU LIST ERROR:", err.message);
+            const body =
+                timeInfo.greet +
+                ", " +
+                mentionTag(sender) +
+                "\n\n*" +
+                botName +
+                "* online\n" +
+                "📦 " +
+                (totalCommands || "150") +
+                "+ · " +
+                prefix +
+                "\n" +
+                "💾 " +
+                stats.ram +
+                "\n" +
+                "⏱️ " +
+                stats.uptime +
+                "\n\n" +
+                prefix +
+                "menu all\n" +
+                prefix +
+                "menu ai · download · group · games · fun · tools · owner";
+
+            const img = pickImage();
+            try {
+                if (img && fs.existsSync(img)) {
+                    await sock.sendMessage(
+                        from,
+                        {
+                            image: fs.readFileSync(img),
+                            caption: body,
+                            mentions: sender ? [sender] : []
+                        },
+                        { quoted: message }
+                    );
+                    return;
+                }
+            } catch (e) {}
+
+            await sock.sendMessage(
+                from,
+                { text: body, mentions: sender ? [sender] : [] },
+                { quoted: message }
+            );
         }
     }
 };
