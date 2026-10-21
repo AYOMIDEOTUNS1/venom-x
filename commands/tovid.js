@@ -4,11 +4,11 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const crypto = require("crypto");
-const { exec } = require("child_process");
+const { execFile } = require("child_process");
 const { promisify } = require("util");
-const { downloadMediaMessage } = require("@whiskeysockets/baileys");
+const { downloadContentFromMessage } = require("@whiskeysockets/baileys");
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 function tmp(ext) {
     return path.join(
@@ -17,24 +17,142 @@ function tmp(ext) {
     );
 }
 
+function resolveFfmpeg() {
+    // 1) system
+    try {
+        const which = require("child_process").execSync("which ffmpeg", {
+            encoding: "utf8"
+        }).trim();
+        if (which) return which;
+    } catch (e) {}
+
+    // 2) bundled
+    try {
+        const ffmpegStatic = require("ffmpeg-static");
+        if (ffmpegStatic && fs.existsSync(ffmpegStatic)) return ffmpegStatic;
+    } catch (e) {}
+
+    return null;
+}
+
+function unwrap(message) {
+    let current = message;
+    for (let i = 0; i < 6; i++) {
+        if (!current) break;
+        if (current.stickerMessage || current.imageMessage || current.videoMessage) {
+            return current;
+        }
+        const next =
+            current.ephemeralMessage?.message ||
+            current.viewOnceMessage?.message ||
+            current.viewOnceMessageV2?.message ||
+            current.viewOnceMessageV2Extension?.message ||
+            current.documentWithCaptionMessage?.message;
+        if (!next) break;
+        current = next;
+    }
+    return current;
+}
+
 function getQuoted(message) {
+    const m = message?.message || {};
     return (
-        message?.message?.extendedTextMessage?.contextInfo?.quotedMessage ||
+        m.extendedTextMessage?.contextInfo?.quotedMessage ||
+        m.imageMessage?.contextInfo?.quotedMessage ||
+        m.videoMessage?.contextInfo?.quotedMessage ||
+        m.stickerMessage?.contextInfo?.quotedMessage ||
         null
     );
 }
 
-function unwrap(msg) {
-    let c = msg;
-    for (let i = 0; i < 5 && c; i++) {
-        if (c.stickerMessage || c.imageMessage || c.videoMessage) return c;
-        c =
-            c.ephemeralMessage?.message ||
-            c.viewOnceMessage?.message ||
-            c.viewOnceMessageV2?.message ||
-            c;
+async function downloadQuoted(quoted) {
+    const cur = unwrap(quoted);
+    if (!cur) throw new Error("Reply to a sticker or image.");
+
+    let type = null;
+    let media = null;
+    if (cur.stickerMessage) {
+        type = "sticker";
+        media = cur.stickerMessage;
+    } else if (cur.imageMessage) {
+        type = "image";
+        media = cur.imageMessage;
+    } else if (cur.videoMessage) {
+        type = "video";
+        media = cur.videoMessage;
     }
-    return c;
+    if (!media) throw new Error("Reply to a sticker or image.");
+
+    const stream = await downloadContentFromMessage(
+        media,
+        type === "sticker" ? "image" : type
+    );
+    const chunks = [];
+    for await (const c of stream) chunks.push(c);
+    const buf = Buffer.concat(chunks);
+    if (!buf.length) throw new Error("Empty media.");
+    return { buf: buf, type: type, isAnimated: !!(media.isAnimated || media.seconds) };
+}
+
+async function webpOrImageToMp4(inputPath, outputPath, ffmpegBin) {
+    // Try animated webp → mp4
+    try {
+        await execFileAsync(
+            ffmpegBin,
+            [
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                inputPath,
+                "-vf",
+                "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                "-an",
+                outputPath
+            ],
+            { timeout: 60000 }
+        );
+        if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 500) {
+            return;
+        }
+    } catch (e) {
+        // fall through — static image loop
+    }
+
+    // Static image / failed webp → 3s still video
+    await execFileAsync(
+        ffmpegBin,
+        [
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-loop",
+            "1",
+            "-t",
+            "3",
+            "-i",
+            inputPath,
+            "-vf",
+            "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            "-an",
+            outputPath
+        ],
+        { timeout: 60000 }
+    );
 }
 
 module.exports = {
@@ -44,55 +162,74 @@ module.exports = {
     run: async function ({ sock, from, message, reply }) {
         const quoted = getQuoted(message);
         if (!quoted) {
-            return reply("❌ Reply to a *sticker* or *image* with #tovid");
+            return reply(
+`╭━━〔 🎥 TOVID 〕━━⬣
+
+Reply to a *sticker* or *image*:
+#tovid
+
+╰━━━━━━━━━━━━━━━━⬣`
+            );
         }
 
-        const payload = unwrap(quoted);
-        const isSticker = !!payload?.stickerMessage;
-        const isImage = !!payload?.imageMessage;
+        const ffmpegBin = resolveFfmpeg();
+        if (!ffmpegBin) {
+            return reply(
+`❌ ffmpeg not found on this server.
 
-        if (!isSticker && !isImage) {
-            return reply("❌ Reply to a sticker or image.");
+Install one of:
+• npm install ffmpeg-static
+• system package: ffmpeg
+
+Then restart the bot.`
+            );
         }
 
-        const inPath = tmp(isSticker ? "webp" : "jpg");
-        const outPath = tmp("mp4");
+        let inPath = null;
+        let outPath = null;
 
         try {
-            await reply("⏳ Converting → video...");
+            await reply("⏳ Converting to video...");
 
-            const buf = await downloadMediaMessage(
-                { message: payload },
-                "buffer",
-                {}
-            );
-            if (!buf?.length) throw new Error("Empty download");
-            fs.writeFileSync(inPath, buf);
+            const dl = await downloadQuoted(quoted);
+            const ext =
+                dl.type === "sticker"
+                    ? "webp"
+                    : dl.type === "video"
+                      ? "mp4"
+                      : "jpg";
 
-            // Force decode animated webp frames into mp4
-            const cmd =
-                'ffmpeg -hide_banner -loglevel error -y -i "' +
-                inPath +
-                '" -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" ' +
-                '-c:v libx264 -pix_fmt yuv420p -movflags +faststart -an "' +
-                outPath +
-                '"';
+            inPath = tmp(ext);
+            outPath = tmp("mp4");
+            fs.writeFileSync(inPath, dl.buf);
 
-            await execAsync(cmd, { timeout: 60000 });
-
-            if (!fs.existsSync(outPath) || fs.statSync(outPath).size < 500) {
-                throw new Error(
-                    "Output video empty. Animated webp may need ffmpeg with libwebp."
+            if (dl.type === "video") {
+                // already video — just send
+                await sock.sendMessage(
+                    from,
+                    {
+                        video: dl.buf,
+                        mimetype: "video/mp4",
+                        caption: "🎥 VENOM X"
+                    },
+                    { quoted: message }
                 );
+                return;
             }
 
+            await webpOrImageToMp4(inPath, outPath, ffmpegBin);
+
+            if (!fs.existsSync(outPath) || fs.statSync(outPath).size < 500) {
+                throw new Error("Conversion produced empty file.");
+            }
+
+            const video = fs.readFileSync(outPath);
             await sock.sendMessage(
                 from,
                 {
-                    video: fs.readFileSync(outPath),
-                    caption: "✅ Converted to video\n⚡ VENOM X",
+                    video: video,
                     mimetype: "video/mp4",
-                    gifPlayback: isSticker
+                    caption: "🎥 Converted · VENOM X"
                 },
                 { quoted: message }
             );
@@ -100,15 +237,16 @@ module.exports = {
             console.log("TOVID ERROR:", err);
             return reply(
                 "❌ #tovid failed:\n" +
-                    String(err.message || err).slice(0, 280) +
-                    "\n\nServer needs working ffmpeg (libwebp for stickers)."
+                    String(err.message || err).slice(0, 400) +
+                    "\n\nffmpeg: " +
+                    (resolveFfmpeg() || "missing")
             );
         } finally {
             try {
-                fs.unlinkSync(inPath);
+                if (inPath && fs.existsSync(inPath)) fs.unlinkSync(inPath);
             } catch (e) {}
             try {
-                fs.unlinkSync(outPath);
+                if (outPath && fs.existsSync(outPath)) fs.unlinkSync(outPath);
             } catch (e) {}
         }
     }

@@ -1,17 +1,9 @@
 "use strict";
 
-/**
- * VENOM X — Apple Music Search & Download (Omegatech)
- * #play Alone
- * #play Alone 2
- * #apple <query>
- */
-
 const axios = require("axios");
 const { getSettings } = require("../lib/settingsCache");
 
-const searchCache = new Map(); // sender -> { results, query, timestamp }
-const activeDownloads = new Set();
+const searchCache = new Map(); // sender -> { query, results, at }
 const CACHE_MS = 5 * 60 * 1000;
 
 function px() {
@@ -22,236 +14,240 @@ function px() {
     }
 }
 
+function cleanCache() {
+    const now = Date.now();
+    for (const [k, v] of searchCache.entries()) {
+        if (!v || now - v.at > CACHE_MS) searchCache.delete(k);
+    }
+}
+
 async function searchApple(query) {
     const url =
         "https://api.omegatech.app/api/Search/Applemusic?action=search&query=" +
         encodeURIComponent(query);
-    const { data } = await axios.get(url, {
-        timeout: 30000,
-        headers: { "User-Agent": "VENOM-X" }
-    });
+    const { data } = await axios.get(url, { timeout: 30000 });
     if (!data || !data.success || !data.data || !data.data.results) {
-        return [];
+        throw new Error("No results.");
     }
-    return data.data.results;
+    return data.data.results.slice(0, 8);
 }
 
-async function downloadApple(query, songUrl) {
-    const url =
+async function downloadApple(song) {
+    // Try common download endpoints
+    const tries = [
+        "https://api.omegatech.app/api/Search/Applemusic?action=download&url=" +
+            encodeURIComponent(song.url || ""),
         "https://api.omegatech.app/api/Search/Applemusic?action=download&query=" +
-        encodeURIComponent(query) +
-        "&url=" +
-        encodeURIComponent(songUrl);
-    const { data } = await axios.get(url, {
-        timeout: 90000,
-        headers: { "User-Agent": "VENOM-X" }
-    });
-    if (!data || !data.success) {
-        throw new Error("Download API failed");
+            encodeURIComponent(
+                (song.title || "") + " " + (song.artist || "")
+            )
+    ];
+
+    let last = null;
+    for (let i = 0; i < tries.length; i++) {
+        try {
+            const { data } = await axios.get(tries[i], { timeout: 60000 });
+            const audioUrl =
+                data?.data?.downloadUrl ||
+                data?.downloadUrl ||
+                data?.data?.url ||
+                data?.url;
+            if (audioUrl) {
+                return {
+                    url: audioUrl,
+                    title: data?.data?.title || song.title,
+                    artist: data?.data?.artist || song.artist
+                };
+            }
+            last = new Error("No download URL");
+        } catch (e) {
+            last = e;
+        }
     }
-    const audioUrl =
-        data.data?.downloadUrl ||
-        data.downloadUrl ||
-        data.data?.url ||
-        data.url;
-    if (!audioUrl) throw new Error("No download URL in response");
-    return audioUrl;
+    throw last || new Error("Download failed");
+}
+
+function formatList(results, query, prefix) {
+    let text =
+        "🎵 *Apple Music*\n" +
+        "Query: *" +
+        query +
+        "*\n\n" +
+        "Reply with a number:\n";
+    for (let i = 0; i < results.length; i++) {
+        const s = results[i];
+        text +=
+            "*" +
+            (i + 1) +
+            ".* " +
+            (s.title || "Unknown") +
+            " — " +
+            (s.artist || "?") +
+            "\n";
+    }
+    text +=
+        "\nExample:\n*" +
+        prefix +
+        "play " +
+        query +
+        " 1*\n" +
+        "or just send: *1*";
+    return text;
 }
 
 module.exports = {
     name: "play",
-    aliases: ["apple", "song", "music"],
+    aliases: ["song", "music", "apple"],
 
-    run: async function ({ sock, from, sender, args, reply, message }) {
+    run: async function ({
+        sock,
+        from,
+        sender,
+        args,
+        message,
+        reply
+    }) {
         const prefix = px();
-        const text = (args || []).join(" ").trim();
+        cleanCache();
 
-        if (!text) {
+        if (!args || !args.length) {
             return reply(
-`╭━━〔 🎵 VENOM X PLAY 〕━━⬣
-┃
-┃ Apple Music search & download
-┃
-┃ Search:
-┃ ${prefix}play Alone
-┃ ${prefix}play Marshmello Alone
-┃
-┃ Download result #:
-┃ ${prefix}play Alone 2
-┃
+`╭━━〔 🎵 VENOM PLAY 〕━━⬣
+
+Usage:
+${prefix}play Alone
+${prefix}play Alone 2
+
+Search → pick a number (works on iPhone).
+
 ╰━━━━━━━━━━━━━━━━⬣`
             );
         }
 
-        const parts = text.split(/\s+/);
-        const last = parts[parts.length - 1];
-        const isNum = /^\d+$/.test(last);
-
-        // ── DOWNLOAD by number ────────────────────────────
-        if (isNum && parts.length >= 2) {
-            const query = parts.slice(0, -1).join(" ");
-            const num = parseInt(last, 10);
-            return handleDownload(sock, from, sender, message, reply, query, num);
+        // If only a number → use last search for this user
+        if (args.length === 1 && /^\d+$/.test(args[0])) {
+            const cached = searchCache.get(sender);
+            if (!cached || !cached.results || !cached.results.length) {
+                return reply("❌ No recent search. Use: " + prefix + "play <song>");
+            }
+            const num = parseInt(args[0], 10);
+            if (num < 1 || num > cached.results.length) {
+                return reply("❌ Pick 1–" + cached.results.length);
+            }
+            return downloadAndSend(
+                sock,
+                from,
+                message,
+                reply,
+                cached.results[num - 1]
+            );
         }
 
-        // ── SEARCH ────────────────────────────────────────
-        await reply("🔍 Searching Apple Music for: *" + text + "*...");
+        // play <query> <number>
+        const last = args[args.length - 1];
+        let query = args.join(" ");
+        let pick = null;
+        if (/^\d+$/.test(last) && args.length > 1) {
+            pick = parseInt(last, 10);
+            query = args.slice(0, -1).join(" ");
+        }
+
+        await reply("🔍 Searching: *" + query + "*...");
 
         try {
-            const results = await searchApple(text);
-            if (!results.length) {
-                return reply("❌ No results for *" + text + "* on Apple Music.");
-            }
+            const results = await searchApple(query);
+            if (!results.length) return reply("❌ No songs found.");
 
             searchCache.set(sender, {
+                query: query,
                 results: results,
-                query: text,
-                timestamp: Date.now()
+                at: Date.now()
             });
 
-            const show = results.slice(0, 5);
-            let body =
-                "╭━━〔 🎵 APPLE MUSIC 〕━━⬣\n┃\n" +
-                "┃ 🔎 *" +
-                text +
-                "*\n" +
-                "┃ 📦 " +
-                results.length +
-                " result(s)\n┃\n";
-
-            for (let i = 0; i < show.length; i++) {
-                const s = show[i];
-                body +=
-                    "┃ *" +
-                    (i + 1) +
-                    ".* " +
-                    (s.title || "Unknown") +
-                    "\n" +
-                    "┃ 🎤 " +
-                    (s.artist || "Unknown") +
-                    (s.explicit ? " 🔞" : "") +
-                    "\n┃\n";
+            if (pick !== null) {
+                if (pick < 1 || pick > results.length) {
+                    return reply("❌ Pick 1–" + results.length);
+                }
+                return downloadAndSend(
+                    sock,
+                    from,
+                    message,
+                    reply,
+                    results[pick - 1]
+                );
             }
 
-            body +=
-                "┃ Download:\n┃ " +
-                prefix +
-                "play " +
-                text +
-                " 1\n" +
-                "╰━━━━━━━━━━━━━━━━⬣";
+            // iPhone-safe: numbered list (+ cover if available)
+            const text = formatList(results, query, prefix);
+            const cover = results[0] && results[0].cover;
 
-            const cover = show[0] && show[0].cover;
             if (cover) {
                 try {
+                    const img = await axios.get(cover, {
+                        responseType: "arraybuffer",
+                        timeout: 15000
+                    });
                     await sock.sendMessage(
                         from,
-                        { image: { url: cover }, caption: body },
+                        {
+                            image: Buffer.from(img.data),
+                            caption: text
+                        },
                         { quoted: message }
                     );
                     return;
                 } catch (e) {}
             }
 
-            return reply(body);
+            return reply(text);
         } catch (err) {
-            console.log("PLAY SEARCH ERROR:", err.message);
+            console.log("PLAY ERROR:", err.message);
             return reply(
-                "❌ Apple Music search failed:\n" +
-                    String(err.message || err).slice(0, 200)
+                "❌ Play failed:\n" + String(err.message || err).slice(0, 250)
             );
         }
     }
 };
 
-async function handleDownload(sock, from, sender, message, reply, query, num) {
-    const key = String(sender) + "|" + query + "|" + num;
-    if (activeDownloads.has(key)) {
-        return reply("⏳ Download already in progress...");
-    }
-    activeDownloads.add(key);
-
+async function downloadAndSend(sock, from, message, reply, song) {
     try {
-        let cache = searchCache.get(sender);
-        let results = (cache && cache.results) || [];
-        let searchQuery = (cache && cache.query) || query;
-
-        if (
-            !cache ||
-            !results.length ||
-            Date.now() - (cache.timestamp || 0) > CACHE_MS
-        ) {
-            results = await searchApple(query);
-            if (!results.length) {
-                return reply("❌ No results for *" + query + "*.");
-            }
-            searchQuery = query;
-            searchCache.set(sender, {
-                results: results,
-                query: query,
-                timestamp: Date.now()
-            });
-        }
-
-        const song = results[num - 1];
-        if (!song) {
-            return reply("❌ Song #" + num + " not found. Search again.");
-        }
-
-        if (!song.url) {
-            return reply("❌ Missing Apple Music URL for that track.");
-        }
-
         await reply(
-            "⬇️ Downloading:\n*" +
-                (song.title || "Track") +
+            "⏳ Downloading:\n*" +
+                (song.title || "Song") +
                 "* — " +
-                (song.artist || "") +
-                "\n⏳ Please wait..."
+                (song.artist || "")
         );
 
-        const audioUrl = await downloadApple(searchQuery, song.url);
-
-        const title = song.title || "track";
-        const artist = song.artist || "";
-
-        // Prefer buffer (more reliable than url on some hosts)
-        let audioPayload = { url: audioUrl };
-        try {
-            const bin = await axios.get(audioUrl, {
-                responseType: "arraybuffer",
-                timeout: 120000,
-                maxContentLength: 40 * 1024 * 1024,
-                headers: { "User-Agent": "VENOM-X" }
-            });
-            const buf = Buffer.from(bin.data);
-            if (buf.length > 1000) audioPayload = buf;
-        } catch (e) {
-            console.log("PLAY buffer fallback to url:", e.message);
-        }
+        const dl = await downloadApple(song);
+        const bin = await axios.get(dl.url, {
+            responseType: "arraybuffer",
+            timeout: 120000,
+            maxContentLength: 30 * 1024 * 1024
+        });
+        const buffer = Buffer.from(bin.data);
+        if (buffer.length < 1000) throw new Error("Empty audio");
 
         await sock.sendMessage(
             from,
             {
-                audio: audioPayload,
+                audio: buffer,
                 mimetype: "audio/mpeg",
-                ptt: false,
-                fileName: String(title).slice(0, 60) + ".mp3"
+                fileName: String(dl.title || "song").slice(0, 40) + ".mp3",
+                ptt: false
             },
             { quoted: message }
         );
 
         await reply(
-            "✅ *Download complete*\n🎵 " + title + " — " + artist
+            "✅ *" +
+                (dl.title || song.title) +
+                "*\n🎤 " +
+                (dl.artist || song.artist || "")
         );
-
-        searchCache.delete(sender);
     } catch (err) {
-        console.log("PLAY DOWNLOAD ERROR:", err.message);
+        console.log("PLAY DL:", err.message);
         return reply(
             "❌ Download failed:\n" + String(err.message || err).slice(0, 250)
         );
-    } finally {
-        activeDownloads.delete(key);
     }
 }
