@@ -1,147 +1,134 @@
+"use strict";
+
 /**
- * ⚡ WhatsApp Channel Reactor
- * React to WhatsApp Channel posts with multiple emojis
- * 
- * Original: Omegatech
- * Cleaned & converted for VENOM X
+ * VENOM X — Channel VIP Reaction (Omegatech API)
+ * #reactch <channel_post_url> <emoji>
+ * #rch / #vipreact
  */
 
-const axios = require('axios');
+const axios = require("axios");
+const { getSettings } = require("../lib/settingsCache");
 
-class ReactChannel {
-    constructor(config) {
-        this.userJwt = config.userJwt;
-        this.siteKey = '6LemKk8sAAAAAH5PB3f1EspbMlXjtwv5C8tiMHSm';
-        this.backendUrl = 'https://back.asitha.top/api';
-
-        this.http = axios.create({
-            headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${this.userJwt}`
-            },
-            timeout: 30000
-        });
+function px() {
+    try {
+        return getSettings().prefix || "#";
+    } catch (e) {
+        return "#";
     }
+}
 
-    async getRecaptchaToken() {
-        const { data } = await axios.get(
-            'https://omegatech-api.dixonomega.tech/api/tools/recaptcha-v3',
-            {
-                params: {
-                    sitekey: this.siteKey,
-                    url: 'https://back.asitha.top/api',
-                    use_enterprise: 'false'
-                }
-            }
+async function sendVipReaction(channelUrl, emoji) {
+    const apiUrl =
+        "https://api.omegatech.app/api/Fun/Rch?action=react&url=" +
+        encodeURIComponent(channelUrl) +
+        "&emoji=" +
+        encodeURIComponent(emoji);
+
+    const { data } = await axios.get(apiUrl, { timeout: 120000 });
+    if (!data || data.success === false) {
+        throw new Error(
+            (data && (data.message || data.error)) || "Reaction failed"
         );
-
-        if (!data?.success || !data?.token) {
-            throw new Error('Recaptcha bypass failed: ' + (data?.message || 'No token returned'));
-        }
-
-        return data.token;
     }
+    return data.data || data;
+}
 
-    async getTempApiKey(token) {
-        const { data } = await this.http.post(
-            `${this.backendUrl}/user/get-temp-token`,
-            { recaptcha_token: token }
-        );
-
-        if (!data?.token) throw new Error('Temp API key failed');
-        return data.token;
-    }
-
-    async reactToPost(postLink, reacts) {
-        const recaptcha = await this.getRecaptchaToken();
-        const tempKey = await this.getTempApiKey(recaptcha);
-
-        const { data } = await this.http.post(
-            `\( {this.backendUrl}/channel/react-to-post?apiKey= \){tempKey}`,
-            {
-                post_link: postLink,
-                reacts
-            }
-        );
-
-        return data;
-    }
+function extractEmoji(rest) {
+    if (!rest) return "🔥";
+    // try first token as emoji / reaction
+    const parts = rest.trim().split(/\s+/);
+    if (parts[0]) return parts[0];
+    return "🔥";
 }
 
 module.exports = {
     name: "reactch",
-    aliases: ["rch", "channelreact", "reactchannel"],
-    category: "tools",
-    description: "React to WhatsApp Channel posts",
+    aliases: ["rch", "vipreact", "creact"],
 
-    run: async ({ sock, args, reply, message }) => {
+    run: async function ({ sock, from, args, message, reply }) {
+        const prefix = px();
 
-        if (!args[0]) {
-            return reply(`╭━━━『 *CHANNEL REACTOR* 』━━━
-│
-│  Usage:
-│  ▸ #reactch <channel post link> <emoji1,emoji2>
-│
-│  Example:
-│  ▸ #reactch https://whatsapp.com/channel/xxx/yyyy 🔥,😭,❤️
-│
-│  Max 4 emojis
-│
-╰━━━━━━━━━━━━━━━━━━━━`);
+        if (!args || !args.length) {
+            return reply(
+`╭━━〔 😁 VENOM CHANNEL REACT 〕━━⬣
+
+Send VIP reactions to a *channel post*.
+
+Usage:
+${prefix}reactch <post_url> <emoji>
+
+Example:
+${prefix}rch https://whatsapp.com/channel/xxx/123 🔥
+${prefix}reactch https://whatsapp.com/channel/xxx/1915 😂
+
+╰━━━━━━━━━━━━━━━━⬣`
+            );
         }
 
+        const text = args.join(" ");
+        const urlMatch = text.match(/(https?:\/\/[^\s]+)/i);
+        if (!urlMatch) {
+            return reply("❌ Need a WhatsApp *channel post* link.");
+        }
+
+        const channelUrl = urlMatch[0];
+        if (!/whatsapp\.com\/channel\//i.test(channelUrl)) {
+            return reply("❌ Link must be a WhatsApp channel post URL.");
+        }
+
+        const rest = text.replace(channelUrl, "").trim();
+        const emoji = extractEmoji(rest);
+
         try {
-            await sock.sendMessage(message.key.remoteJid, {
-                react: { text: '⏳', key: message.key }
-            });
+            await reply(
+                "🔄 Sending VIP reaction…\n\n🔗 " +
+                    channelUrl +
+                    "\n😁 " +
+                    emoji +
+                    "\n⏱️ Can take 10–20s"
+            );
 
-            const input = args.join(' ');
-            const parts = input.split(' ');
-            const postLink = parts[0];
-            const reactsRaw = parts.slice(1).join(' ');
+            const result = await sendVipReaction(channelUrl, emoji);
 
-            if (!postLink || !reactsRaw) {
-                return reply('❌ Invalid format.\nUse: #reactch <link> <emoji1,emoji2>');
-            }
+            const time = result.time || result.duration || "—";
+            const msg = result.message || "Reaction queued";
+            const taskId = result.task_id || result.taskId || "—";
+            const emojis = result.emojis || emoji;
+            const vipKey = result.vip_key || result.vipKey || "—";
+            const vipPackage = result.vip_package || result.vipPackage || "VIP";
+            const usageToday = result.usage_today ?? result.usageToday ?? "—";
+            const limit = result.limit ?? "—";
+            const points =
+                result.points_remaining ?? result.pointsRemaining ?? "—";
 
-            if (!postLink.includes('whatsapp.com/channel/')) {
-                return reply('❌ Invalid WhatsApp Channel link.');
-            }
-
-            const emojis = reactsRaw
-                .split(',')
-                .map(e => e.trim())
-                .filter(Boolean);
-
-            if (!emojis.length) {
-                return reply('❌ No emojis provided.');
-            }
-
-            if (emojis.length > 4) {
-                return reply('❌ Maximum 4 emojis allowed.');
-            }
-
-            // ⚠️ Put your JWT token here
-            const client = new ReactChannel({
-                userJwt: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY5OGE2ZGI5MjVjMzUyOTcxZTIyYTdkNSIsImlhdCI6MTc3NTg1NzUyMCwiZXhwIjoxNzc2NDYyMzIwfQ.q7D6potY6cl3n-ZY8nQbetNFqPSl79aF5IIZ_QbtABc'
-            });
-
-            await client.reactToPost(postLink, emojis.join(','));
-
-            await sock.sendMessage(message.key.remoteJid, {
-                react: { text: '✅', key: message.key }
-            });
-
-            return reply(`✅ *Reactions sent successfully!*\n\nEmojis: ${emojis.join(' ')}`);
-
+            // Plain reply — works on iPhone + Android (no rich bot UI)
+            return reply(
+`╭━━〔 ✅ VIP REACTION 〕━━⬣
+┃
+┃ 🔗 Target
+┃ ${channelUrl}
+┃
+┃ 😁 Emoji : ${emojis}
+┃ ⏱️ Time  : ${time}
+┃ 📝 Status: ${msg}
+┃ 📋 Task  : ${taskId}
+┃
+┃ ⭐ VIP
+┃ 🔑 Key : ${vipKey}
+┃ 📦 Pack: ${vipPackage}
+┃ 📊 Use : \( {usageToday}/ \){limit}
+┃ 💎 Pts : ${points}
+┃
+┃ Note: queued — may take a few seconds.
+┃
+╰━━━━━━━━━━━━━━━━⬣`
+            );
         } catch (e) {
-            console.error('[REACTCH] Error:', e.response?.data || e.message);
-
-            await sock.sendMessage(message.key.remoteJid, {
-                react: { text: '❌', key: message.key }
-            });
-
-            return reply(`❌ Failed: ${e.response?.data?.message || e.message}`);
+            console.error("[REACTCH]", e.message || e);
+            return reply(
+                "❌ VIP reaction failed:\n" +
+                    String(e.message || e).slice(0, 280)
+            );
         }
     }
 };
