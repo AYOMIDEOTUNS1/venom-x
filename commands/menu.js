@@ -1,22 +1,24 @@
 "use strict";
 
 /**
- * VENOM X Menu — works on iPhone + Android
- * Always sends image + caption (no interactive-only UI)
- * #menu / #m
- * #menu all
- * #menu ai | image | download | group | ...
+ * VENOM X Menu
+ * 1) Interactive LIST (Android / clients that support it)
+ * 2) Always image + caption (iPhone + everyone)
  */
 
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const {
+    generateWAMessageFromContent,
+    prepareWAMessageMedia
+} = require("@whiskeysockets/baileys");
 const { getSettings } = require("../lib/settingsCache");
 
 const menuImageDir = path.join(__dirname, "../media/menu");
 
-function px(settings) {
-    return (settings && settings.prefix) || "#";
+function px(s) {
+    return (s && s.prefix) || "#";
 }
 
 function loadImages() {
@@ -146,10 +148,12 @@ function mentionTag(sender) {
 const CATEGORIES = {
     ai: {
         title: "🧠 AI",
+        desc: "Chat, nano, deepseek",
         cmds: ["ai", "deepseek", "nano", "secret", "tools"]
     },
     image: {
         title: "🎨 Image",
+        desc: "HD, sticker, convert",
         cmds: [
             "hd",
             "sticker",
@@ -168,10 +172,12 @@ const CATEGORIES = {
     },
     nsfw: {
         title: "🔞 NSFW",
+        desc: "Adult",
         cmds: ["xv", "xvphoto", "xnxx", "deepnude", "mature"]
     },
     download: {
         title: "📥 Downloads",
+        desc: "Play, TikTok, YT, IG",
         cmds: [
             "play",
             "spotify",
@@ -191,10 +197,12 @@ const CATEGORIES = {
     },
     audio: {
         title: "🎵 Audio",
+        desc: "Bass, TTS, convert",
         cmds: ["play", "tomp3", "bass", "reverse", "tts"]
     },
     group: {
         title: "👥 Group",
+        desc: "Admin & anti",
         cmds: [
             "tagall",
             "hidetag",
@@ -227,6 +235,7 @@ const CATEGORIES = {
     },
     economy: {
         title: "💰 Economy",
+        desc: "Bal, work, market",
         cmds: [
             "bal",
             "bank",
@@ -253,6 +262,7 @@ const CATEGORIES = {
     },
     games: {
         title: "🎮 Games",
+        desc: "Slots, duel, bird",
         cmds: [
             "slots",
             "dice",
@@ -278,6 +288,7 @@ const CATEGORIES = {
     },
     fun: {
         title: "😝 Fun",
+        desc: "Truth, meme, roast",
         cmds: [
             "fun",
             "funextra",
@@ -295,10 +306,12 @@ const CATEGORIES = {
     },
     anime: {
         title: "✨ Anime",
+        desc: "Anime & stickers",
         cmds: ["anime", "animelovers", "animepic", "telesticker"]
     },
     tools: {
         title: "🛠️ Tools",
+        desc: "PDF, plugin, getcode",
         cmds: [
             "get",
             "url",
@@ -321,6 +334,7 @@ const CATEGORIES = {
     },
     utility: {
         title: "⚙️ Utility",
+        desc: "Ping, alive, pair",
         cmds: [
             "ping",
             "alive",
@@ -336,6 +350,7 @@ const CATEGORIES = {
     },
     owner: {
         title: "👑 Owner",
+        desc: "Sudo, ban, update",
         cmds: [
             "public",
             "private",
@@ -369,17 +384,15 @@ function catText(prefix, key) {
 }
 
 function fullText(prefix, botName, total) {
-    let out =
-        "*" + botName + " — ALL COMMANDS*\nTotal: " + total + "\n\n";
+    let out = "*" + botName + " — ALL COMMANDS*\nTotal: " + total + "\n\n";
     const keys = Object.keys(CATEGORIES);
     for (let i = 0; i < keys.length; i++) {
         out += catText(prefix, keys[i]) + "\n\n";
     }
-    out += "_Powered by " + botName + "_";
-    return out.trim();
+    return out.trim() + "\n\n_Powered by " + botName + "_";
 }
 
-function shortMenu(opts) {
+function shortCaption(opts) {
     const {
         prefix,
         botName,
@@ -400,24 +413,21 @@ function shortMenu(opts) {
         "╭━━━「 🌀 *" +
         botName +
         "* 🌀 」━━━\n" +
-        "┃\n" +
-        "┃ ✅ Online & ready\n" +
+        "┃ ✅ Online\n" +
         "┃ ⚡ Commands: *" +
         totalCommands +
         "*+\n" +
         "┃ 🔧 Prefix: *" +
         prefix +
         "*\n" +
-        "┃\n" +
         "┃ 🕐 " +
         timeInfo.time +
-        "\n" +
-        "┃ 📅 " +
-        timeInfo.day +
         " · " +
+        timeInfo.day +
+        "\n" +
+        "┃ 📆 " +
         timeInfo.date +
         "\n" +
-        "┃\n" +
         "┃ 🖥️ " +
         stats.platform +
         "\n" +
@@ -438,34 +448,24 @@ function shortMenu(opts) {
         stats.node +
         "\n" +
         "┃\n" +
-        "┃ ◈ *" +
+        "┃ ◈ " +
         prefix +
-        "menu all* → full list\n" +
-        "┃ ◈ *" +
+        "menu all\n" +
+        "┃ ◈ " +
         prefix +
-        "menu ai*\n" +
-        "┃ ◈ *" +
+        "menu ai · download · group\n" +
+        "┃ ◈ " +
         prefix +
-        "menu download*\n" +
-        "┃ ◈ *" +
+        "menu games · fun · tools\n" +
+        "┃ ◈ " +
         prefix +
-        "menu group*\n" +
-        "┃ ◈ *" +
+        "menu economy · owner\n" +
+        "┃ ◈ " +
         prefix +
-        "menu games*\n" +
-        "┃ ◈ *" +
-        prefix +
-        "menu fun*\n" +
-        "┃ ◈ *" +
-        prefix +
-        "menu tools*\n" +
-        "┃ ◈ *" +
-        prefix +
-        "menu economy*\n" +
-        "┃ ◈ *" +
-        prefix +
-        "ping*\n" +
+        "ping\n" +
         "┃\n" +
+        "┃ _If you see a list button below, open it_\n" +
+        "┃ _If not (iPhone), use the commands above_\n" +
         "╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n" +
         "> _Powered by " +
         botName +
@@ -473,12 +473,8 @@ function shortMenu(opts) {
     );
 }
 
-async function sendCaption(sock, from, message, sender, caption) {
+async function sendImageCaption(sock, from, message, sender, caption) {
     const img = pickImage();
-    const payload = {
-        caption: caption,
-        mentions: sender ? [sender] : []
-    };
     try {
         if (img && fs.existsSync(img)) {
             await sock.sendMessage(
@@ -500,6 +496,179 @@ async function sendCaption(sock, from, message, sender, caption) {
         { text: caption, mentions: sender ? [sender] : [] },
         { quoted: message }
     );
+}
+
+async function sendListMenu(sock, from, message, opts) {
+    const {
+        prefix,
+        botName,
+        pushName,
+        totalCommands,
+        sender,
+        stats,
+        timeInfo
+    } = opts;
+
+    const bodyText =
+        timeInfo.greet +
+        ", " +
+        mentionTag(sender) +
+        " (*" +
+        pushName +
+        "*)\n\n" +
+        "*" +
+        botName +
+        "* online · *" +
+        totalCommands +
+        "*+ cmds\n" +
+        "Prefix *" +
+        prefix +
+        "*\n" +
+        timeInfo.time +
+        " · " +
+        timeInfo.day +
+        "\n" +
+        "RAM " +
+        stats.ram +
+        " · Up " +
+        stats.uptime +
+        "\n\n" +
+        "Open the *list* and pick a category 👇";
+
+    const rows = [
+        {
+            header: "All",
+            title: "📋 All commands",
+            description: "Full list",
+            id: prefix + "menu all"
+        }
+    ];
+    const keys = Object.keys(CATEGORIES);
+    for (let i = 0; i < keys.length; i++) {
+        const k = keys[i];
+        const c = CATEGORIES[k];
+        rows.push({
+            header: k.toUpperCase(),
+            title: c.title,
+            description: c.desc,
+            id: prefix + "menu " + k
+        });
+    }
+    rows.push({
+        header: "Ping",
+        title: "🏓 Ping",
+        description: "Speed check",
+        id: prefix + "ping"
+    });
+
+    let header = {
+        title: botName,
+        subtitle: "Select from the list",
+        hasMediaAttachment: false
+    };
+
+    try {
+        const imgPath = pickImage();
+        if (imgPath && fs.existsSync(imgPath)) {
+            const media = await prepareWAMessageMedia(
+                { image: fs.readFileSync(imgPath) },
+                { upload: sock.waUploadToServer }
+            );
+            if (media.imageMessage) {
+                header = {
+                    title: botName,
+                    subtitle: "Select from the list",
+                    hasMediaAttachment: true,
+                    imageMessage: media.imageMessage
+                };
+            }
+        }
+    } catch (e) {
+        console.log("MENU LIST IMG:", e.message);
+    }
+
+    const interactiveMessage = {
+        header: header,
+        body: { text: bodyText },
+        footer: { text: "Powered by " + botName },
+        contextInfo: { mentionedJid: sender ? [sender] : [] },
+        nativeFlowMessage: {
+            buttons: [
+                {
+                    name: "single_select",
+                    buttonParamsJson: JSON.stringify({
+                        title: "📂 Open menu list",
+                        sections: [
+                            {
+                                title: botName + " categories",
+                                highlight_label: "VENOM",
+                                rows: rows
+                            }
+                        ]
+                    })
+                }
+            ],
+            messageParamsJson: ""
+        }
+    };
+
+    const msg = generateWAMessageFromContent(
+        from,
+        {
+            viewOnceMessage: {
+                message: {
+                    messageContextInfo: {
+                        deviceListMetadata: {},
+                        deviceListMetadataVersion: 2
+                    },
+                    interactiveMessage: interactiveMessage
+                }
+            }
+        },
+        { userJid: sock.user.id, quoted: message }
+    );
+
+    try {
+        if (
+            sender &&
+            msg.message?.viewOnceMessage?.message?.interactiveMessage
+        ) {
+            msg.message.viewOnceMessage.message.interactiveMessage.contextInfo =
+                { mentionedJid: [sender] };
+        }
+    } catch (e) {}
+
+    const additionalNodes = [
+        {
+            tag: "biz",
+            attrs: {},
+            content: [
+                {
+                    tag: "interactive",
+                    attrs: { type: "native_flow", v: "1" },
+                    content: [
+                        {
+                            tag: "native_flow",
+                            attrs: { v: "9", name: "mixed" },
+                            content: undefined
+                        }
+                    ]
+                }
+            ]
+        }
+    ];
+    if (!String(from).endsWith("@g.us")) {
+        additionalNodes.push({
+            tag: "bot",
+            attrs: { biz_bot: "1" },
+            content: undefined
+        });
+    }
+
+    await sock.relayMessage(from, msg.message, {
+        messageId: msg.key.id,
+        additionalNodes: additionalNodes
+    });
 }
 
 module.exports = {
@@ -537,7 +706,7 @@ module.exports = {
         const sub = String(args[0] || "").toLowerCase();
 
         if (sub === "all" || sub === "full") {
-            return sendCaption(
+            return sendImageCaption(
                 sock,
                 from,
                 message,
@@ -545,9 +714,8 @@ module.exports = {
                 fullText(prefix, botName, totalCommands)
             );
         }
-
         if (CATEGORIES[sub]) {
-            return sendCaption(
+            return sendImageCaption(
                 sock,
                 from,
                 message,
@@ -556,8 +724,7 @@ module.exports = {
             );
         }
 
-        // Default short menu — always visible on iPhone
-        const caption = shortMenu({
+        const caption = shortCaption({
             prefix: prefix,
             botName: botName,
             pushName: pushName,
@@ -567,6 +734,22 @@ module.exports = {
             stats: stats
         });
 
-        return sendCaption(sock, from, message, sender, caption);
+        // 1) Always visible on iPhone
+        await sendImageCaption(sock, from, message, sender, caption);
+
+        // 2) List for clients that support native_flow (Android etc.)
+        try {
+            await sendListMenu(sock, from, message, {
+                prefix: prefix,
+                botName: botName,
+                pushName: pushName,
+                totalCommands: totalCommands,
+                sender: sender,
+                stats: stats,
+                timeInfo: timeInfo
+            });
+        } catch (err) {
+            console.log("MENU LIST:", err.message);
+        }
     }
 };
