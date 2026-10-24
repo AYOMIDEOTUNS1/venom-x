@@ -157,8 +157,6 @@ module.exports = function (sock) {
         if (m.templateButtonReplyMessage?.selectedDisplayText) {
             return m.templateButtonReplyMessage.selectedDisplayText;
         }
-
-        // native flow list / quick reply (menu list)
         try {
             const params =
                 m.interactiveResponseMessage?.nativeFlowResponseMessage
@@ -170,8 +168,20 @@ module.exports = function (sock) {
                 if (j.rowId) return String(j.rowId);
             }
         } catch (e) {}
-
         return "";
+    }
+
+    function userIsBanned(sender, senderPn) {
+        if (!isBanned) return false;
+        try {
+            if (isBanned(sender)) return true;
+            if (senderPn && isBanned(senderPn)) return true;
+            const d1 = onlyDigits(sender);
+            const d2 = onlyDigits(senderPn);
+            if (d1 && isBanned(d1)) return true;
+            if (d2 && isBanned(d2)) return true;
+        } catch (e) {}
+        return false;
     }
 
     let recordSticker = null;
@@ -182,17 +192,23 @@ module.exports = function (sock) {
     let runAntiGuards = null;
     try {
         runAntiGuards = require("../lib/antiGuard").runAntiGuards;
-    } catch (e) {}
+    } catch (e) {
+        console.log("⚠️ lib/antiGuard not loaded — antilink/etc inactive");
+    }
 
     let isBanned = null;
     try {
         isBanned = require("../lib/banlist").isBanned;
-    } catch (e) {}
+    } catch (e) {
+        console.log("⚠️ lib/banlist not loaded — ban inactive");
+    }
 
     let isAdminOnly = null;
     try {
         isAdminOnly = require("../lib/groupMode").isAdminOnly;
-    } catch (e) {}
+    } catch (e) {
+        console.log("⚠️ lib/groupMode not loaded — adminonly inactive");
+    }
 
     sock.ev.on("messages.upsert", async function (upsert) {
         try {
@@ -211,7 +227,6 @@ module.exports = function (sock) {
                     }
                 }
 
-                // #getcode cache
                 try {
                     const { proto } = require("@whiskeysockets/baileys");
                     if (msg.key.remoteJid && msg.key.id && msg.message) {
@@ -245,8 +260,8 @@ module.exports = function (sock) {
                 const settings = getSettings();
                 const prefix = settings.prefix || "#";
                 const body = String(getBody(msg) || "").trim();
-                if (!body) continue;
 
+                // ── ANTI (antilink / channel / status tag) — before body skip
                 if (isGroup && sender && !msg.key.fromMe && runAntiGuards) {
                     try {
                         const blocked = await runAntiGuards(
@@ -261,9 +276,11 @@ module.exports = function (sock) {
                     }
                 }
 
+                if (!body) continue;
                 if (!body.startsWith(prefix)) continue;
 
-                if (isBanned && isBanned(sender)) continue;
+                // ── BAN — cannot use commands
+                if (userIsBanned(sender, senderPn)) continue;
 
                 const without = body.slice(prefix.length).trim();
                 const parts = without.split(/\s+/);
@@ -278,6 +295,7 @@ module.exports = function (sock) {
                 const isSudo = isOwner;
                 const isPrivileged = isOwner || isSudo;
 
+                // ── ADMIN ONLY group mode
                 if (
                     isGroup &&
                     isAdminOnly &&
@@ -288,21 +306,26 @@ module.exports = function (sock) {
                     try {
                         const meta = await sock.groupMetadata(from);
                         const participants = meta.participants || [];
+                        const digSender = onlyDigits(senderPn || sender);
                         for (let p = 0; p < participants.length; p++) {
                             const j =
                                 participants[p].id ||
                                 participants[p].jid ||
                                 "";
-                            if (
+                            const digJ = onlyDigits(j);
+                            const same =
                                 j === sender ||
-                                onlyDigits(j) === onlyDigits(senderPn)
+                                j === senderPn ||
+                                (digJ &&
+                                    digSender &&
+                                    phoneMatch(digJ, digSender));
+                            if (!same) continue;
+                            if (
+                                participants[p].admin === "admin" ||
+                                participants[p].admin === "superadmin"
                             ) {
-                                if (
-                                    participants[p].admin === "admin" ||
-                                    participants[p].admin === "superadmin"
-                                ) {
-                                    adminOk = true;
-                                }
+                                adminOk = true;
+                                break;
                             }
                         }
                     } catch (e) {}

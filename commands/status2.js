@@ -1,18 +1,19 @@
 "use strict";
 
 /**
- * VENOM X — Group Status V2
- * list | multi-group | colors | text/image/video
- * Media via downloadContentFromMessage (no stanzaId required)
+ * VENOM X — Group Status V3
+ * text works; media fixed (download + prepare + groupStatusMessageV2)
  */
 
 const fs = require("fs");
 const path = require("path");
 const {
     downloadContentFromMessage,
+    downloadMediaMessage,
     generateWAMessageFromContent,
     prepareWAMessageMedia,
-    jidNormalizedUser
+    jidNormalizedUser,
+    generateMessageID
 } = require("@whiskeysockets/baileys");
 const { getSettings } = require("../lib/settingsCache");
 
@@ -185,40 +186,41 @@ function parseArgs(args) {
 function unwrapMessage(message) {
     if (!message) return null;
     let current = message;
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 8; i++) {
         if (
             current.imageMessage ||
             current.videoMessage ||
+            current.stickerMessage ||
             current.conversation ||
             current.extendedTextMessage
         ) {
-            break;
+            return current;
         }
         const next =
             current.ephemeralMessage?.message ||
             current.viewOnceMessage?.message ||
             current.viewOnceMessageV2?.message ||
             current.viewOnceMessageV2Extension?.message ||
-            current.documentWithCaptionMessage?.message;
+            current.documentWithCaptionMessage?.message ||
+            current.editedMessage?.message;
         if (!next) break;
         current = next;
     }
     return current;
 }
 
-function getQuotedContext(message) {
+function getQuotedMessage(message) {
     const m = message?.message || {};
-    return (
+    const ctx =
         m.extendedTextMessage?.contextInfo ||
         m.imageMessage?.contextInfo ||
         m.videoMessage?.contextInfo ||
         m.documentMessage?.contextInfo ||
-        {}
-    );
-}
-
-function getQuotedMessage(message) {
-    return getQuotedContext(message)?.quotedMessage || null;
+        m.buttonsResponseMessage?.contextInfo ||
+        m.listResponseMessage?.contextInfo ||
+        m.templateButtonReplyMessage?.contextInfo ||
+        null;
+    return ctx?.quotedMessage || null;
 }
 
 function getMedia(message) {
@@ -229,6 +231,10 @@ function getMedia(message) {
     }
     if (current.videoMessage) {
         return { type: "video", message: current.videoMessage };
+    }
+    // stickers as image status
+    if (current.stickerMessage) {
+        return { type: "sticker", message: current.stickerMessage };
     }
     return null;
 }
@@ -277,7 +283,7 @@ function buildTextStatusContext(senderJid) {
     };
 }
 
-function buildMediaStatusContext() {
+function buildMediaStatusContext(senderJid) {
     return {
         forwardingScore: 0,
         featureEligibilities: {
@@ -287,7 +293,12 @@ function buildMediaStatusContext() {
         pairedMediaType: 0,
         statusSourceType: 4,
         isGroupStatus: true,
-        statusAttributions: [{ type: 10 }],
+        statusAttributions: [
+            {
+                type: 6,
+                groupStatus: { authorJid: senderJid }
+            }
+        ],
         statusAudienceMetadata: {
             audienceType: 1,
             listEmoji: "⚡",
@@ -335,6 +346,18 @@ async function sendGroupTextStatus(sock, groupJid, text, colorName) {
     return generated.key.id;
 }
 
+async function normalizeImageBuffer(buffer) {
+    try {
+        const sharp = require("sharp");
+        return await sharp(buffer)
+            .rotate()
+            .jpeg({ quality: 90 })
+            .toBuffer();
+    } catch (e) {
+        return buffer;
+    }
+}
+
 async function sendGroupMediaStatus(
     sock,
     groupJid,
@@ -347,63 +370,114 @@ async function sendGroupMediaStatus(
     if (!groupJid.endsWith("@g.us")) {
         throw new Error("Target must be a group JID.");
     }
-    if (type !== "image" && type !== "video") {
+
+    const senderJid = getSenderJid(sock);
+    let mediaType = type;
+    let finalBuf = buffer;
+    let mime = originalMimetype || "";
+
+    // sticker → image
+    if (mediaType === "sticker") {
+        mediaType = "image";
+        finalBuf = await normalizeImageBuffer(buffer);
+        mime = "image/jpeg";
+    }
+
+    if (mediaType === "image") {
+        finalBuf = await normalizeImageBuffer(finalBuf);
+        mime = "image/jpeg";
+    } else if (mediaType === "video") {
+        mime = mime || "video/mp4";
+        if (!/video\//i.test(mime)) mime = "video/mp4";
+    } else {
         throw new Error("Unsupported media type: " + type);
     }
 
-    const senderJid = getSenderJid(sock);
-    const mime =
-        originalMimetype ||
-        (type === "image" ? "image/jpeg" : "video/mp4");
-
     const mediaInput =
-        type === "image"
-            ? { image: buffer, mimetype: mime, caption: caption || undefined }
-            : { video: buffer, mimetype: mime, caption: caption || undefined };
+        mediaType === "image"
+            ? {
+                  image: finalBuf,
+                  mimetype: mime,
+                  caption: caption || undefined
+              }
+            : {
+                  video: finalBuf,
+                  mimetype: mime,
+                  caption: caption || undefined
+              };
 
     const prepared = await prepareWAMessageMedia(mediaInput, {
         upload: sock.waUploadToServer
     });
 
-    const mediaKey = type === "image" ? "imageMessage" : "videoMessage";
-    const mediaMessage = prepared?.[mediaKey];
-    if (!mediaMessage) throw new Error("Baileys failed to prepare " + type);
+    const mediaKey = mediaType === "image" ? "imageMessage" : "videoMessage";
+    if (!prepared || !prepared[mediaKey]) {
+        throw new Error("Baileys failed to prepare " + mediaType + " upload");
+    }
 
-    mediaMessage.contextInfo = {
-        ...(mediaMessage.contextInfo || {}),
-        ...buildMediaStatusContext()
-    };
-
-    let generated = generateWAMessageFromContent(
-        groupJid,
-        {
-            groupStatusMessageV2: {
-                message: { [mediaKey]: mediaMessage }
-            }
-        },
-        { userJid: senderJid }
+    // clone so we can safely attach status context
+    const mediaMessage = Object.assign({}, prepared[mediaKey]);
+    if (caption) mediaMessage.caption = String(caption);
+    mediaMessage.contextInfo = Object.assign(
+        {},
+        mediaMessage.contextInfo || {},
+        buildMediaStatusContext(senderJid)
     );
 
-    if (!generated?.message || !generated?.key?.id) {
-        generated = generateWAMessageFromContent(
+    const msgId =
+        (typeof generateMessageID === "function" && generateMessageID()) ||
+        undefined;
+
+    // Primary: groupStatusMessageV2
+    try {
+        const generated = generateWAMessageFromContent(
             groupJid,
-            { [mediaKey]: mediaMessage },
-            { userJid: senderJid }
+            {
+                groupStatusMessageV2: {
+                    message: {
+                        [mediaKey]: mediaMessage
+                    }
+                }
+            },
+            { userJid: senderJid, messageId: msgId }
+        );
+
+        if (generated?.message && generated?.key?.id) {
+            await sock.relayMessage(groupJid, generated.message, {
+                messageId: generated.key.id
+            });
+            return generated.key.id;
+        }
+    } catch (e1) {
+        console.log("[GCSTATUS] v2 media path:", e1.message);
+    }
+
+    // Fallback: relay raw groupStatusMessageV2 without generateWAMessageFromContent
+    try {
+        const id =
+            msgId ||
+            "3EB0" + require("crypto").randomBytes(8).toString("hex").toUpperCase();
+        await sock.relayMessage(
+            groupJid,
+            {
+                groupStatusMessageV2: {
+                    message: {
+                        [mediaKey]: mediaMessage
+                    }
+                }
+            },
+            { messageId: id }
+        );
+        return id;
+    } catch (e2) {
+        console.log("[GCSTATUS] raw relay:", e2.message);
+        throw new Error(
+            "Media status relay failed: " + (e2.message || e2)
         );
     }
-
-    if (!generated?.message || !generated?.key?.id) {
-        throw new Error("Failed to build " + type + " group status.");
-    }
-
-    await sock.relayMessage(groupJid, generated.message, {
-        messageId: generated.key.id
-    });
-    return generated.key.id;
 }
 
-/** No stanzaId required — uses quoted media payload directly */
-async function downloadQuotedMedia(quoted) {
+async function downloadQuotedMedia(sock, quoted) {
     const current = unwrapMessage(quoted);
     if (!current) throw new Error("Reply to an image or video.");
 
@@ -415,20 +489,57 @@ async function downloadQuotedMedia(quoted) {
     } else if (current.videoMessage) {
         type = "video";
         mediaMsg = current.videoMessage;
+    } else if (current.stickerMessage) {
+        type = "sticker";
+        mediaMsg = current.stickerMessage;
     }
 
     if (!type || !mediaMsg) {
-        throw new Error("Reply to an image or video.");
+        throw new Error("Reply to an image, video, or sticker.");
     }
 
-    const stream = await downloadContentFromMessage(mediaMsg, type);
-    const chunks = [];
-    for await (const chunk of stream) {
-        chunks.push(chunk);
+    // Path A: downloadContentFromMessage
+    try {
+        const dlType = type === "sticker" ? "image" : type;
+        const stream = await downloadContentFromMessage(mediaMsg, dlType);
+        const chunks = [];
+        for await (const chunk of stream) {
+            chunks.push(chunk);
+        }
+        const buffer = Buffer.concat(chunks);
+        if (buffer.length) {
+            return {
+                buffer: buffer,
+                type: type,
+                mimetype: mediaMsg.mimetype || ""
+            };
+        }
+    } catch (e) {
+        console.log("[GCSTATUS] downloadContent fail:", e.message);
     }
-    const buffer = Buffer.concat(chunks);
-    if (!buffer.length) throw new Error("Downloaded media is empty.");
-    return { buffer: buffer, type: type, mimetype: mediaMsg.mimetype || "" };
+
+    // Path B: downloadMediaMessage
+    try {
+        const buffer = await downloadMediaMessage(
+            { message: current },
+            "buffer",
+            {},
+            {
+                reuploadRequest: sock.updateMediaMessage
+            }
+        );
+        if (buffer && buffer.length) {
+            return {
+                buffer: Buffer.from(buffer),
+                type: type,
+                mimetype: mediaMsg.mimetype || ""
+            };
+        }
+    } catch (e) {
+        console.log("[GCSTATUS] downloadMediaMessage fail:", e.message);
+    }
+
+    throw new Error("Could not download media. Re-send the image/video and try again.");
 }
 
 function resolveTargets(groups, numbers, currentFrom) {
@@ -493,11 +604,9 @@ module.exports = {
                     text += "┃ *" + (i + 1) + ".* " + groups[i].subject + "\n";
                 }
                 text +=
-                    "┃\n┃ In a group:\n┃ " +
+                    "┃\n┃ Media: reply image/video + `" +
                     prefix +
-                    "gcstatus Hello\n┃\n┃ Multi:\n┃ " +
-                    prefix +
-                    "gcstatus 1 3 Hello\n" +
+                    "gcstatus`\n" +
                     "╰━━━━━━━━━━━━━━━━⬣";
                 return reply(text);
             } catch (err) {
@@ -514,7 +623,11 @@ module.exports = {
 ┃ ${prefix}gcstatus Hello
 ┃ ${prefix}gcstatus 1 3 Hello
 ┃ ${prefix}gcstatus 2 blue Hi
-┃ Reply media + ${prefix}gcstatus
+┃
+┃ Media:
+┃ Reply image/video/sticker
+┃ then ${prefix}gcstatus
+┃ or ${prefix}gcstatus caption here
 ┃
 ╰━━━━━━━━━━━━━━━━⬣`
             );
@@ -541,20 +654,19 @@ module.exports = {
                 const media = getMedia(quoted);
                 if (media) {
                     await reply(
-                        "⏳ Posting " +
+                        "⏳ Downloading " +
                             media.type +
-                            " → *" +
+                            " → post to *" +
                             targetJids.length +
                             "* status..."
                     );
 
-                    const dl = await downloadQuotedMedia(quoted);
+                    const dl = await downloadQuotedMedia(sock, quoted);
                     const caption =
-                        parsed.text || media.message?.caption || "";
-                    const mimetype =
-                        dl.mimetype ||
-                        media.message?.mimetype ||
-                        (dl.type === "image" ? "image/jpeg" : "video/mp4");
+                        parsed.text ||
+                        media.message?.caption ||
+                        "";
+                    const mimetype = dl.mimetype || media.message?.mimetype || "";
 
                     let ok = 0;
                     let fail = 0;
@@ -573,16 +685,16 @@ module.exports = {
                             ok++;
                         } catch (e) {
                             fail++;
-                            errors.push(String(e.message || e).slice(0, 80));
+                            errors.push(String(e.message || e).slice(0, 120));
                             console.log(
                                 "[GCSTATUS] media fail",
                                 targetJids[i],
-                                e.message
+                                e.message || e
                             );
                         }
                         if (targetJids.length > 1) {
                             await new Promise(function (r) {
-                                setTimeout(r, 700);
+                                setTimeout(r, 900);
                             });
                         }
                     }
@@ -602,7 +714,11 @@ module.exports = {
             }
 
             if (!parsed.text) {
-                return reply("❌ Provide text or reply to image/video.");
+                return reply(
+                    "❌ Provide text or *reply* to an image/video with `" +
+                        prefix +
+                        "gcstatus`"
+                );
             }
 
             await reply(
@@ -624,7 +740,7 @@ module.exports = {
                     ok++;
                 } catch (e) {
                     fail++;
-                    errors.push(String(e.message || e).slice(0, 80));
+                    errors.push(String(e.message || e).slice(0, 120));
                     console.log(
                         "[GCSTATUS] text fail",
                         targetJids[i],
