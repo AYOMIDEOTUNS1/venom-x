@@ -1,23 +1,45 @@
+"use strict";
+
 const fs = require("fs");
 const path = require("path");
-const SETTINGS = path.join(__dirname, "..", "settings.json");
+
+const SETTINGS = path.join(__dirname, "../settings.json");
 
 function load() {
-    try { return JSON.parse(fs.readFileSync(SETTINGS, "utf8")); }
-    catch (e) { return {}; }
+    try {
+        return JSON.parse(fs.readFileSync(SETTINGS, "utf8"));
+    } catch (e) {
+        return {};
+    }
 }
-function save(data) {
-    fs.writeFileSync(SETTINGS, JSON.stringify(data, null, 2));
+
+function save(s) {
+    fs.writeFileSync(SETTINGS, JSON.stringify(s, null, 2));
 }
 
 module.exports = {
     name: "public",
-    aliases: [],
-    run: async function ({ reply, isOwner }) {
-        if (!isOwner) return reply("❌ Owner only.");
-        const settings = load();
-        settings.mode = "public";
-        save(settings);
-        return reply("🌍 Mode: PUBLIC\nEveryone can use commands.");
+    aliases: ["openbot"],
+
+    run: async function ({ reply, isOwner, isPrivileged }) {
+        if (!isOwner && !isPrivileged) {
+            return reply("❌ Owner only.");
+        }
+        const s = load();
+        s.mode = "public";
+        s.public = true;
+        save(s);
+        try {
+            const cache = require("../lib/settingsCache");
+            if (cache.invalidate) cache.invalidate();
+            if (cache.reload) cache.reload();
+        } catch (e) {}
+        return reply(
+`╭━━〔 🌍 PUBLIC MODE 〕━━⬣
+┃
+┃ Everyone can use the bot.
+┃
+╰━━━━━━━━━━━━━━━━⬣`
+        );
     }
 };

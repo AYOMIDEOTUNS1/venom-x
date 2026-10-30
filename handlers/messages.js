@@ -54,17 +54,6 @@ module.exports = function (sock) {
                 console.log("⚠️ Bad command " + file + ":", e.message);
             }
         }
-
-        try {
-            const menuDir = path.join(__dirname, "../media/menu");
-            if (fs.existsSync(menuDir)) {
-                const imgs = fs.readdirSync(menuDir).filter(function (f) {
-                    return /\.(jpg|jpeg|png|webp)$/i.test(f);
-                });
-                console.log("🖼️ Menu images:", imgs.length);
-            }
-        } catch (e) {}
-
         console.log("📦 Loaded " + commands.size + " command keys");
     }
 
@@ -134,6 +123,14 @@ module.exports = function (sock) {
         return false;
     }
 
+    function isPrivateMode(settings) {
+        if (!settings) return false;
+        if (settings.mode === "private") return true;
+        if (settings.mode === "public") return false;
+        if (settings.public === false) return true;
+        return false;
+    }
+
     function getBody(msg) {
         const m = msg.message || {};
         if (m.conversation) return m.conversation;
@@ -141,21 +138,14 @@ module.exports = function (sock) {
         if (m.imageMessage?.caption) return m.imageMessage.caption;
         if (m.videoMessage?.caption) return m.videoMessage.caption;
         if (m.documentMessage?.caption) return m.documentMessage.caption;
-        if (m.buttonsResponseMessage?.selectedDisplayText) {
-            return m.buttonsResponseMessage.selectedDisplayText;
-        }
         if (m.buttonsResponseMessage?.selectedButtonId) {
             return m.buttonsResponseMessage.selectedButtonId;
         }
+        if (m.buttonsResponseMessage?.selectedDisplayText) {
+            return m.buttonsResponseMessage.selectedDisplayText;
+        }
         if (m.listResponseMessage?.singleSelectReply?.selectedRowId) {
             return m.listResponseMessage.singleSelectReply.selectedRowId;
-        }
-        if (m.listResponseMessage?.title) return m.listResponseMessage.title;
-        if (m.templateButtonReplyMessage?.selectedId) {
-            return m.templateButtonReplyMessage.selectedId;
-        }
-        if (m.templateButtonReplyMessage?.selectedDisplayText) {
-            return m.templateButtonReplyMessage.selectedDisplayText;
         }
         try {
             const params =
@@ -171,17 +161,30 @@ module.exports = function (sock) {
         return "";
     }
 
-    function userIsBanned(sender, senderPn) {
-        if (!isBanned) return false;
-        try {
-            if (isBanned(sender)) return true;
-            if (senderPn && isBanned(senderPn)) return true;
-            const d1 = onlyDigits(sender);
-            const d2 = onlyDigits(senderPn);
-            if (d1 && isBanned(d1)) return true;
-            if (d2 && isBanned(d2)) return true;
-        } catch (e) {}
-        return false;
+    function getMentioned(msg) {
+        const m = msg.message || {};
+        const ctx =
+            m.extendedTextMessage?.contextInfo ||
+            m.imageMessage?.contextInfo ||
+            m.videoMessage?.contextInfo ||
+            {};
+        const list = [];
+        const raw = ctx.mentionedJid || [];
+        for (let i = 0; i < raw.length; i++) {
+            if (raw[i]) list.push(raw[i]);
+        }
+        if (ctx.participant) list.push(ctx.participant);
+        return list;
+    }
+
+    function getQuotedParticipant(msg) {
+        const m = msg.message || {};
+        const ctx =
+            m.extendedTextMessage?.contextInfo ||
+            m.imageMessage?.contextInfo ||
+            m.videoMessage?.contextInfo ||
+            {};
+        return ctx.participant || null;
     }
 
     let recordSticker = null;
@@ -193,21 +196,38 @@ module.exports = function (sock) {
     try {
         runAntiGuards = require("../lib/antiGuard").runAntiGuards;
     } catch (e) {
-        console.log("⚠️ lib/antiGuard not loaded — antilink/etc inactive");
+        console.log("⚠️ antiGuard not loaded");
     }
 
     let isBanned = null;
     try {
         isBanned = require("../lib/banlist").isBanned;
-    } catch (e) {
-        console.log("⚠️ lib/banlist not loaded — ban inactive");
-    }
+    } catch (e) {}
 
     let isAdminOnly = null;
     try {
         isAdminOnly = require("../lib/groupMode").isAdminOnly;
+    } catch (e) {}
+
+    let afk = null;
+    try {
+        afk = require("../lib/afk");
     } catch (e) {
-        console.log("⚠️ lib/groupMode not loaded — adminonly inactive");
+        console.log("⚠️ afk not loaded");
+    }
+
+    // wordchain — support several export shapes
+    function getWordchainHandler() {
+        try {
+            const wc = require("../commands/wordchain");
+            if (typeof wc.handleWordChainMessage === "function") {
+                return wc.handleWordChainMessage;
+            }
+            if (typeof wc.onMessage === "function") return wc.onMessage;
+            if (typeof wc.handleMessage === "function") return wc.handleMessage;
+            if (typeof wc.handle === "function") return wc.handle;
+        } catch (e) {}
+        return null;
     }
 
     sock.ev.on("messages.upsert", async function (upsert) {
@@ -260,8 +280,61 @@ module.exports = function (sock) {
                 const settings = getSettings();
                 const prefix = settings.prefix || "#";
                 const body = String(getBody(msg) || "").trim();
+                const isOwner = isOwnerMsg(msg, sender, senderPn, settings);
+                const isSudo = isOwner;
+                const isPrivileged = isOwner || isSudo;
 
-                // ── ANTI (antilink / channel / status tag) — before body skip
+                // ── AFK: track activity when this user speaks
+                if (afk && sender && !msg.key.fromMe) {
+                    try {
+                        afk.touch(sender);
+                        if (senderPn) afk.touch(senderPn);
+                    } catch (e) {}
+                }
+
+                // ── AFK: if someone tags / replies to an AFK user
+                if (afk && isGroup && !msg.key.fromMe && body) {
+                    try {
+                        const targets = [];
+                        const mentioned = getMentioned(msg);
+                        for (let t = 0; t < mentioned.length; t++) {
+                            targets.push(mentioned[t]);
+                        }
+                        const qp = getQuotedParticipant(msg);
+                        if (qp) targets.push(qp);
+
+                        for (let t = 0; t < targets.length; t++) {
+                            const target = targets[t];
+                            if (afk.sameUser(target, sender)) continue;
+                            const state = afk.getAfkState(target);
+                            if (!state) continue;
+                            if (!afk.canNotify(target)) continue;
+
+                            const mention = "@" + String(target).split("@")[0];
+                            await sock.sendMessage(
+                                from,
+                                {
+                                    text:
+`╭━━〔 💤 AFK 〕━━⬣
+┃
+┃ ${mention} is *away*
+┃
+┃ 📝 ${state.reason}
+┃ ⏱️ Offline: *${state.offlineFor}*
+┃ 🔖 ${state.type === "manual" ? "Manual AFK" : "Auto (20+ min quiet)"}
+┃
+╰━━━━━━━━━━━━━━━━⬣`,
+                                    mentions: [target]
+                                },
+                                { quoted: msg }
+                            );
+                        }
+                    } catch (e) {
+                        console.log("afk notify:", e.message);
+                    }
+                }
+
+                // ── ANTI GUARDS (before body/prefix requirements)
                 if (isGroup && sender && !msg.key.fromMe && runAntiGuards) {
                     try {
                         const blocked = await runAntiGuards(
@@ -276,11 +349,82 @@ module.exports = function (sock) {
                     }
                 }
 
+                // ── WORDCHAIN (no prefix — active game turns)
+                if (body && !msg.key.fromMe) {
+                    const wcHandler = getWordchainHandler();
+                    if (wcHandler) {
+                        try {
+                            const handled = await wcHandler({
+                                sock: sock,
+                                from: from,
+                                sender: sender,
+                                senderPn: senderPn,
+                                body: body,
+                                message: msg,
+                                msg: msg,
+                                isGroup: isGroup,
+                                reply: async function (text) {
+                                    return sock.sendMessage(
+                                        from,
+                                        { text: String(text) },
+                                        { quoted: msg }
+                                    );
+                                }
+                            });
+                            if (handled === true) continue;
+                        } catch (e) {
+                            console.log("wordchain:", e.message);
+                        }
+                    }
+                }
+
+                
+                // ── WORDCHAIN (plain words, no prefix)
+                if (body && !msg.key.fromMe && isGroup) {
+                    try {
+                        const wc = require("../commands/wordchain");
+                        if (typeof wc.handleWordChainMessage === "function") {
+                            const handled = await wc.handleWordChainMessage(
+                                sock,
+                                msg,
+                                from,
+                                sender,
+                                body,
+                                isGroup
+                            );
+                            if (handled === true) continue;
+                        }
+                    } catch (e) {
+                        console.log("wordchain:", e.message);
+                    }
+                }
+
                 if (!body) continue;
+
+                // private / public
+                // owner can always run commands (including #public)
+                if (isPrivateMode(settings) && !isPrivileged) {
+                    // still allow nothing for non-owners
+                    if (!body.startsWith(prefix)) continue;
+                    // block non-owner commands in private mode
+                    continue;
+                }
+
                 if (!body.startsWith(prefix)) continue;
 
-                // ── BAN — cannot use commands
-                if (userIsBanned(sender, senderPn)) continue;
+                // ban
+                if (isBanned) {
+                    try {
+                        if (
+                            isBanned(sender) ||
+                            isBanned(senderPn) ||
+                            isBanned(onlyDigits(sender)) ||
+                            isBanned(onlyDigits(senderPn))
+                        ) {
+                            continue;
+                        }
+                    } catch (e) {}
+                }
 
                 const without = body.slice(prefix.length).trim();
                 const parts = without.split(/\s+/);
@@ -291,11 +435,7 @@ module.exports = function (sock) {
                 const command = commands.get(commandName);
                 if (!command || typeof command.run !== "function") continue;
 
-                const isOwner = isOwnerMsg(msg, sender, senderPn, settings);
-                const isSudo = isOwner;
-                const isPrivileged = isOwner || isSudo;
-
-                // ── ADMIN ONLY group mode
+                // admin-only groups
                 if (
                     isGroup &&
                     isAdminOnly &&
