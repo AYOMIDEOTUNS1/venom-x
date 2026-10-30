@@ -141,9 +141,6 @@ module.exports = function (sock) {
         if (m.buttonsResponseMessage?.selectedButtonId) {
             return m.buttonsResponseMessage.selectedButtonId;
         }
-        if (m.buttonsResponseMessage?.selectedDisplayText) {
-            return m.buttonsResponseMessage.selectedDisplayText;
-        }
         if (m.listResponseMessage?.singleSelectReply?.selectedRowId) {
             return m.listResponseMessage.singleSelectReply.selectedRowId;
         }
@@ -173,7 +170,6 @@ module.exports = function (sock) {
         for (let i = 0; i < raw.length; i++) {
             if (raw[i]) list.push(raw[i]);
         }
-        if (ctx.participant) list.push(ctx.participant);
         return list;
     }
 
@@ -216,20 +212,6 @@ module.exports = function (sock) {
         console.log("⚠️ afk not loaded");
     }
 
-    // wordchain — support several export shapes
-    function getWordchainHandler() {
-        try {
-            const wc = require("../commands/wordchain");
-            if (typeof wc.handleWordChainMessage === "function") {
-                return wc.handleWordChainMessage;
-            }
-            if (typeof wc.onMessage === "function") return wc.onMessage;
-            if (typeof wc.handleMessage === "function") return wc.handleMessage;
-            if (typeof wc.handle === "function") return wc.handle;
-        } catch (e) {}
-        return null;
-    }
-
     sock.ev.on("messages.upsert", async function (upsert) {
         try {
             const messages = upsert.messages || [];
@@ -248,8 +230,9 @@ module.exports = function (sock) {
                 }
 
                 try {
-                    const { proto } = require("@whiskeysockets/baileys");
-                    if (msg.key.remoteJid && msg.key.id && msg.message) {
+                    const baileys = require("@whiskeysockets/baileys");
+                    const proto = baileys.proto;
+                    if (proto && msg.key.remoteJid && msg.key.id && msg.message) {
                         const ckey = msg.key.remoteJid + ":" + msg.key.id;
                         const raw = Buffer.from(
                             proto.Message.encode(
@@ -284,22 +267,44 @@ module.exports = function (sock) {
                 const isSudo = isOwner;
                 const isPrivileged = isOwner || isSudo;
 
-                // ── AFK: track activity when this user speaks
+                // ── AFK: activity + welcome back
                 if (afk && sender && !msg.key.fromMe) {
                     try {
-                        afk.touch(sender);
-                        if (senderPn) afk.touch(senderPn);
-                    } catch (e) {}
+                        const back =
+                            afk.touch(sender) ||
+                            (senderPn ? afk.touch(senderPn) : null);
+                        if (back && back.wasAfk && isGroup) {
+                            await sock.sendMessage(
+                                from,
+                                {
+                                    text:
+"╭━━〔 👋 WELCOME BACK 〕━━⬣\n" +
+"┃\n" +
+"┃ 👤 @" +
+String(sender).split("@")[0] +
+"\n" +
+"┃\n" +
+"┃ You were away for *" +
+back.offlineFor +
+"*\n" +
+(back.reason ? "┃ 📝 " + back.reason + "\n" : "") +
+"┃\n" +
+"┃ Welcome back 🔥\n" +
+"╰━━━━━━━━━━━━━━━━⬣",
+                                    mentions: [sender]
+                                },
+                                { quoted: msg }
+                            );
+                        }
+                    } catch (e) {
+                        console.log("afk touch:", e.message);
+                    }
                 }
 
-                // ── AFK: if someone tags / replies to an AFK user
+                // ── AFK: tag / reply notify
                 if (afk && isGroup && !msg.key.fromMe && body) {
                     try {
-                        const targets = [];
-                        const mentioned = getMentioned(msg);
-                        for (let t = 0; t < mentioned.length; t++) {
-                            targets.push(mentioned[t]);
-                        }
+                        const targets = getMentioned(msg).slice();
                         const qp = getQuotedParticipant(msg);
                         if (qp) targets.push(qp);
 
@@ -310,20 +315,27 @@ module.exports = function (sock) {
                             if (!state) continue;
                             if (!afk.canNotify(target)) continue;
 
-                            const mention = "@" + String(target).split("@")[0];
                             await sock.sendMessage(
                                 from,
                                 {
                                     text:
-`╭━━〔 💤 AFK 〕━━⬣
-┃
-┃ ${mention} is *away*
-┃
-┃ 📝 ${state.reason}
-┃ ⏱️ Offline: *${state.offlineFor}*
-┃ 🔖 ${state.type === "manual" ? "Manual AFK" : "Auto (20+ min quiet)"}
-┃
-╰━━━━━━━━━━━━━━━━⬣`,
+"╭━━〔 💤 AFK 〕━━⬣\n" +
+"┃\n" +
+"┃ @" +
+String(target).split("@")[0] +
+" is *away*\n" +
+"┃\n" +
+"┃ 📝 " +
+state.reason +
+"\n" +
+"┃ ⏱️ Offline: *" +
+state.offlineFor +
+"*\n" +
+"┃ 🔖 " +
+(state.type === "manual" ? "Manual AFK" : "Auto (20+ min quiet)") +
+"\n" +
+"┃\n" +
+"╰━━━━━━━━━━━━━━━━⬣",
                                     mentions: [target]
                                 },
                                 { quoted: msg }
@@ -334,7 +346,7 @@ module.exports = function (sock) {
                     }
                 }
 
-                // ── ANTI GUARDS (before body/prefix requirements)
+                // ── ANTI GUARDS
                 if (isGroup && sender && !msg.key.fromMe && runAntiGuards) {
                     try {
                         const blocked = await runAntiGuards(
@@ -349,37 +361,7 @@ module.exports = function (sock) {
                     }
                 }
 
-                // ── WORDCHAIN (no prefix — active game turns)
-                if (body && !msg.key.fromMe) {
-                    const wcHandler = getWordchainHandler();
-                    if (wcHandler) {
-                        try {
-                            const handled = await wcHandler({
-                                sock: sock,
-                                from: from,
-                                sender: sender,
-                                senderPn: senderPn,
-                                body: body,
-                                message: msg,
-                                msg: msg,
-                                isGroup: isGroup,
-                                reply: async function (text) {
-                                    return sock.sendMessage(
-                                        from,
-                                        { text: String(text) },
-                                        { quoted: msg }
-                                    );
-                                }
-                            });
-                            if (handled === true) continue;
-                        } catch (e) {
-                            console.log("wordchain:", e.message);
-                        }
-                    }
-                }
-
-                
-                // ── WORDCHAIN (plain words, no prefix)
+                // ── WORDCHAIN (correct signature)
                 if (body && !msg.key.fromMe && isGroup) {
                     try {
                         const wc = require("../commands/wordchain");
@@ -401,12 +383,8 @@ module.exports = function (sock) {
 
                 if (!body) continue;
 
-                // private / public
-                // owner can always run commands (including #public)
+                // private mode — only owner/sudo
                 if (isPrivateMode(settings) && !isPrivileged) {
-                    // still allow nothing for non-owners
-                    if (!body.startsWith(prefix)) continue;
-                    // block non-owner commands in private mode
                     continue;
                 }
 
