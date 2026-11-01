@@ -1,12 +1,9 @@
 "use strict";
 
 /**
- * VENOM X - TikTok Downloader
- * #tt <link>
- * #ttmp4 <link>
- * #ttmp3 <link>
- * #ttphoto <link>
- * #ttinfo <link>
+ * VENOM X - TikTok Downloader (TikWM)
+ * #tt | #ttmp4 | #ttmp3 | #ttphoto | #ttinfo
+ * API: unchanged (POST tikwm.com)
  */
 
 const axios = require("axios");
@@ -18,12 +15,18 @@ const API_ENDPOINTS = [
 ];
 
 const MAX_MEDIA_SIZE = 80 * 1024 * 1024;
-const MAX_PHOTOS = 10;
+const MAX_PHOTOS = 50;
+
+const sleep = function (ms) {
+    return new Promise(function (resolve) {
+        setTimeout(resolve, ms);
+    });
+};
 
 function px() {
     try {
         return getSettings().prefix || "#";
-    } catch {
+    } catch (e) {
         return "#";
     }
 }
@@ -32,10 +35,7 @@ function extractUrl(text) {
     const match = String(text || "").match(
         /https?:\/\/(?:www\.|m\.|vm\.|vt\.)?tiktok\.com\/[^\s<>"']+/i
     );
-
-    return match
-        ? match[0].replace(/[),.;!?]+$/g, "")
-        : null;
+    return match ? match[0].replace(/[),.;!?]+$/g, "") : null;
 }
 
 function quotedText(message) {
@@ -44,6 +44,7 @@ function quotedText(message) {
             message?.message?.extendedTextMessage?.contextInfo ||
             message?.message?.imageMessage?.contextInfo ||
             message?.message?.videoMessage?.contextInfo ||
+            message?.message?.documentMessage?.contextInfo ||
             {};
 
         const quoted = context.quotedMessage;
@@ -54,34 +55,28 @@ function quotedText(message) {
             quoted.extendedTextMessage?.text ||
             quoted.imageMessage?.caption ||
             quoted.videoMessage?.caption ||
+            quoted.documentMessage?.caption ||
             ""
         );
-    } catch {
+    } catch (e) {
         return "";
     }
 }
 
 function format(number) {
     const n = Number(number) || 0;
-
     if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
     if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
-
     return String(n);
 }
 
 function mediaUrl(value) {
     if (!value || typeof value !== "string") return null;
-
     try {
         const url = new URL(value, "https://www.tikwm.com/");
-
-        if (url.protocol !== "https:") {
-            throw new Error("Invalid media URL protocol");
-        }
-
+        if (url.protocol !== "http:" && url.protocol !== "https:") return null;
         return url.toString();
-    } catch {
+    } catch (e) {
         return null;
     }
 }
@@ -102,75 +97,60 @@ async function tikwm(url) {
 
     let lastError;
 
-    for (const endpoint of API_ENDPOINTS) {
+    for (let e = 0; e < API_ENDPOINTS.length; e++) {
+        const endpoint = API_ENDPOINTS[e];
         for (let attempt = 1; attempt <= 2; attempt++) {
             try {
-                const response = await axios.post(
-                    endpoint,
-                    form.toString(),
-                    {
-                        timeout: 45000,
-                        maxRedirects: 5,
-                        headers: {
-                            "User-Agent":
-                                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
-                            "Content-Type":
-                                "application/x-www-form-urlencoded",
-                            Accept: "application/json"
-                        }
+                const response = await axios.post(endpoint, form.toString(), {
+                    timeout: 45000,
+                    maxRedirects: 5,
+                    headers: {
+                        "User-Agent":
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+                        "Content-Type":
+                            "application/x-www-form-urlencoded",
+                        Accept: "application/json"
                     }
-                );
+                });
 
                 const result = response.data;
-
-                if (
-                    result &&
-                    Number(result.code) === 0 &&
-                    result.data
-                ) {
+                if (result && Number(result.code) === 0 && result.data) {
                     return result.data;
                 }
-
                 lastError = new Error(getApiError(result));
-
-                // Do not retry invalid or unavailable TikTok links.
                 break;
             } catch (error) {
                 lastError = error;
-
-                if (attempt < 2) {
-                    await new Promise(resolve =>
-                        setTimeout(resolve, 1200)
-                    );
-                }
+                if (attempt < 2) await sleep(1200);
             }
         }
     }
 
     throw new Error(
         lastError?.response?.status
-            ? `TikWM HTTP ${lastError.response.status}`
+            ? "TikWM HTTP " + lastError.response.status
             : lastError?.message || "TikWM service unavailable."
     );
 }
 
-async function downloadBuf(fileUrl, expectedType) {
+async function downloadBuf(fileUrl) {
     const url = mediaUrl(fileUrl);
-
-    if (!url) {
-        throw new Error("Invalid media URL returned by API.");
-    }
+    if (!url) throw new Error("Invalid media URL returned by API.");
 
     const response = await axios.get(url, {
         responseType: "arraybuffer",
         timeout: 120000,
         maxContentLength: MAX_MEDIA_SIZE,
         maxBodyLength: MAX_MEDIA_SIZE,
+        maxRedirects: 5,
         headers: {
             "User-Agent":
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
             Referer: "https://www.tiktok.com/",
             Accept: "*/*"
+        },
+        validateStatus: function (s) {
+            return s >= 200 && s < 400;
         }
     });
 
@@ -182,25 +162,19 @@ async function downloadBuf(fileUrl, expectedType) {
     if (!buffer.length) {
         throw new Error("TikTok returned an empty media file.");
     }
-
     if (buffer.length > MAX_MEDIA_SIZE) {
         throw new Error("Media exceeds the 80MB limit.");
     }
-
+    // reject obvious HTML/JSON error pages only
     if (
-        contentType.includes("text/html") ||
-        contentType.includes("application/json")
+        contentType.indexOf("text/html") !== -1 ||
+        contentType.indexOf("application/json") !== -1
     ) {
-        throw new Error("TikTok returned an error instead of media.");
+        throw new Error("TikTok returned an error page instead of media.");
     }
-
-    if (
-        expectedType &&
-        contentType &&
-        !contentType.includes(expectedType) &&
-        !contentType.includes("octet-stream")
-    ) {
-        throw new Error("Unexpected media format: " + contentType);
+    // tiny payloads are almost never valid video/audio
+    if (buffer.length < 2000) {
+        throw new Error("Media file too small / blocked.");
     }
 
     return buffer;
@@ -208,40 +182,73 @@ async function downloadBuf(fileUrl, expectedType) {
 
 function caption(t) {
     const author = t.author || {};
+    const music = t.music_info || {};
+
+    const authorName = author.nickname || author.unique_id || "Unknown";
+    const region = t.region || "Unknown";
+    const musicName = music.title || music.author || "Original sound";
+    const videoCaption = String(t.title || "No caption")
+        .replace(/\r/g, "")
+        .slice(0, 500);
 
     return (
-        "╭━━〔 🎵 VENOM X TIKTOK 〕━━⬣\n" +
-        "┃ 👤 " + (author.nickname || author.unique_id || "Unknown") + "\n" +
-        "┃ ❤️ " + format(t.digg_count) +
-        " · 💬 " + format(t.comment_count) +
-        " · 👀 " + format(t.play_count) + "\n" +
-        "┃ 🔁 " + format(t.share_count) + "\n" +
-        "┃ ⏱️ " + (t.duration || 0) + " seconds\n" +
-        "┃ 📝 " + String(t.title || "TikTok video").slice(0, 160) + "\n" +
-        "╰━━━━━━━━━━━━━━━━⬣"
+`╭━━〔 🎵 VENOM X TIKTOK 〕━━⬣
+┃
+┃ 👤 Author : ${authorName}
+┃ 🌍 Region : ${region}
+┃ ❤️ Likes : ${format(t.digg_count)}
+┃ 💬 Comments : ${format(t.comment_count)}
+┃ 🔁 Shares : ${format(t.share_count)}
+┃ 👀 Views : ${format(t.play_count)}
+┃ ⏱ Duration : ${Number(t.duration) || 0}s
+┃ 🎵 Music : ${musicName}
+┃
+┃ 📝 Caption
+┃ ${videoCaption}
+╰━━━━━━━━━━━━━━━━⬣`
     );
 }
 
 function getImageUrl(image) {
     if (typeof image === "string") return mediaUrl(image);
-
     if (image && typeof image === "object") {
-        return mediaUrl(image.url || image.url_list?.[0]);
+        return mediaUrl(image.url || (image.url_list && image.url_list[0]));
     }
-
     return null;
+}
+
+function pickVideoUrl(t, preferHd) {
+    if (preferHd) {
+        return t.hdplay || t.play || t.wmplay || null;
+    }
+    return t.play || t.hdplay || t.wmplay || null;
+}
+
+function pickAudioUrl(t) {
+    return (t.music_info && t.music_info.play) || t.music || null;
+}
+
+function isPhotoPost(t) {
+    return Array.isArray(t.images) && t.images.length > 0;
+}
+
+async function setReact(sock, message, emoji) {
+    try {
+        await sock.sendMessage(message.key.remoteJid || message.key.remoteJid, {
+            react: { text: emoji, key: message.key }
+        });
+    } catch (e) {
+        try {
+            await sock.sendMessage(message.key.remoteJid, {
+                react: { text: emoji, key: message.key }
+            });
+        } catch (err) {}
+    }
 }
 
 module.exports = {
     name: "tiktok",
-
-    aliases: [
-        "tt",
-        "ttinfo",
-        "ttphoto",
-        "ttmp3",
-        "ttmp4"
-    ],
+    aliases: ["tt", "ttinfo", "ttphoto", "ttmp3", "ttmp4"],
 
     run: async function ({
         sock,
@@ -255,7 +262,7 @@ module.exports = {
         const prefix = px();
         const cmd = String(commandName || "tiktok").toLowerCase();
 
-        let url =
+        const url =
             extractUrl((args || []).join(" ")) ||
             extractUrl(body || "") ||
             extractUrl(quotedText(message));
@@ -265,12 +272,12 @@ module.exports = {
 `╭━━〔 🎵 VENOM X TIKTOK 〕━━⬣
 
 ${prefix}tt <link>       Video
-${prefix}ttmp4 <link>    MP4
+${prefix}ttmp4 <link>    HD MP4
 ${prefix}ttmp3 <link>    Audio
 ${prefix}ttphoto <link>  Photos
-${prefix}ttinfo <link>   Information
+${prefix}ttinfo <link>   Info
 
-You can also reply to a TikTok link.
+Reply to a TikTok link + ${prefix}tt
 
 ╰━━━━━━━━━━━━━━━━⬣`
             );
@@ -280,114 +287,147 @@ You can also reply to a TikTok link.
             await sock.sendMessage(from, {
                 react: { text: "⏳", key: message.key }
             });
-        } catch {}
+        } catch (e) {}
 
         try {
-            await reply("⏳ Fetching TikTok media...");
+            await reply("⏳ Fetching TikTok media…");
 
             const t = await tikwm(url);
             const cap = caption(t);
 
-            // VIDEO INFORMATION
+            // ── INFO
             if (cmd === "ttinfo") {
                 return reply(cap);
             }
 
-            // AUDIO
+            // ── AUDIO
             if (cmd === "ttmp3") {
-                const audioUrl =
-                    t.music_info?.play ||
-                    t.music;
-
+                const audioUrl = pickAudioUrl(t);
                 if (!audioUrl) {
                     throw new Error("No audio is available for this post.");
                 }
-
-                const audio = await downloadBuf(audioUrl, "audio");
-
+                const audio = await downloadBuf(audioUrl);
                 await sock.sendMessage(
                     from,
                     {
-                        audio,
+                        audio: audio,
                         mimetype: "audio/mpeg",
                         fileName: "VENOM-TIKTOK.mp3",
                         ptt: false
                     },
                     { quoted: message }
                 );
-
                 await reply(cap);
+                try {
+                    await sock.sendMessage(from, {
+                        react: { text: "🎵", key: message.key }
+                    });
+                } catch (e) {}
                 return;
             }
 
-            // PHOTO SLIDESHOW
-            if (cmd === "ttphoto") {
-                if (!Array.isArray(t.images) || !t.images.length) {
-                    throw new Error("This TikTok post has no photo slideshow.");
-                }
+            // ── PHOTOS (explicit or slideshow post)
+            const wantPhoto = cmd === "ttphoto";
+            const photoPost = isPhotoPost(t);
+
+            if (wantPhoto && !photoPost) {
+                throw new Error("This TikTok post has no photo slideshow.");
             }
 
-            if (
-                cmd === "ttphoto" ||
-                (Array.isArray(t.images) && t.images.length)
-            ) {
-                const images = t.images
-                    .map(getImageUrl)
-                    .filter(Boolean)
-                    .slice(0, MAX_PHOTOS);
+            if (wantPhoto || (photoPost && cmd !== "ttmp4" && cmd !== "tt")) {
+                // ttphoto always photos; pure photo posts also go here for #tt
+            }
 
-                if (!images.length) {
-                    throw new Error("No valid photo URLs were returned.");
-                }
+            if (wantPhoto || (photoPost && (cmd === "ttphoto" || cmd === "tt" || cmd === "tiktok"))) {
+                if (photoPost) {
+                    const images = t.images
+                        .map(getImageUrl)
+                        .filter(Boolean)
+                        .slice(0, MAX_PHOTOS);
 
-                await reply(cap);
+                    if (!images.length) {
+                        throw new Error("No valid photo URLs were returned.");
+                    }
 
-                for (let i = 0; i < images.length; i++) {
-                    const image = await downloadBuf(images[i], "image");
-
-                    await sock.sendMessage(
-                        from,
-                        {
-                            image,
-                            caption: `VENOM X TIKTOK PHOTO ${i + 1}/${images.length}`
-                        },
-                        { quoted: message }
+                    await reply(
+                        cap + "\n\n📸 Photos : " + images.length + "/" + MAX_PHOTOS
                     );
+
+                    for (let i = 0; i < images.length; i++) {
+                        const image = await downloadBuf(images[i]);
+                        await sock.sendMessage(
+                            from,
+                            {
+                                image: image,
+                                caption:
+                                    "╭━━〔 📸 VENOM X PHOTO 〕━━⬣\n" +
+                                    "┃ Photo : " +
+                                    (i + 1) +
+                                    "/" +
+                                    images.length +
+                                    "\n" +
+                                    "╰━━━━━━━━━━━━━━━━⬣"
+                            },
+                            { quoted: message }
+                        );
+                        if (i < images.length - 1) await sleep(350);
+                    }
+
+                    try {
+                        await sock.sendMessage(from, {
+                            react: { text: "✅", key: message.key }
+                        });
+                    } catch (e) {}
+                    return;
                 }
-
-                await sock.sendMessage(from, {
-                    react: { text: "✅", key: message.key }
-                });
-
-                return;
             }
 
-            // VIDEO
-            const videoUrl =
-                t.hdplay ||
-                t.play ||
-                t.wmplay;
-
+            // ── VIDEO (#tt / #ttmp4)
+            const preferHd = cmd === "ttmp4" || cmd === "tt" || cmd === "tiktok";
+            const videoUrl = pickVideoUrl(t, preferHd);
             if (!videoUrl) {
                 throw new Error("No downloadable video was returned.");
             }
 
-            const video = await downloadBuf(videoUrl, "video");
-
+            const video = await downloadBuf(videoUrl);
             await sock.sendMessage(
                 from,
                 {
-                    video,
+                    video: video,
                     caption: cap,
-                    mimetype: "video/mp4"
+                    mimetype: "video/mp4",
+                    fileName: "VENOM-TIKTOK.mp4"
                 },
                 { quoted: message }
             );
 
-            await sock.sendMessage(from, {
-                react: { text: "✅", key: message.key }
-            });
+            // optional music attach for normal #tt (not forced)
+            if (cmd === "tt" || cmd === "tiktok") {
+                const audioUrl = pickAudioUrl(t);
+                if (audioUrl) {
+                    try {
+                        const audio = await downloadBuf(audioUrl);
+                        await sock.sendMessage(
+                            from,
+                            {
+                                audio: audio,
+                                mimetype: "audio/mpeg",
+                                fileName: "VENOM-TIKTOK.mp3",
+                                ptt: false
+                            },
+                            { quoted: message }
+                        );
+                    } catch (e) {
+                        // ignore audio attach failures
+                    }
+                }
+            }
 
+            try {
+                await sock.sendMessage(from, {
+                    react: { text: "✅", key: message.key }
+                });
+            } catch (e) {}
         } catch (error) {
             console.error(
                 "[VENOM TIKTOK ERROR]",
@@ -399,14 +439,17 @@ You can also reply to a TikTok link.
                 await sock.sendMessage(from, {
                     react: { text: "❌", key: message.key }
                 });
-            } catch {}
+            } catch (e) {}
 
             return reply(
 `╭━━〔 ❌ TIKTOK ERROR 〕━━⬣
 
 ${String(error.message || error).slice(0, 250)}
 
-Try another link later.
+Link:
+${url}
+
+Try another link or wait a bit.
 
 ╰━━━━━━━━━━━━━━━━⬣`
             );
