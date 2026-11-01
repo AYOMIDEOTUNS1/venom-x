@@ -1,3 +1,5 @@
+"use strict";
+
 const games = new Map();
 
 const START_WORDS = [
@@ -14,6 +16,34 @@ const BANNED = new Set([
 
 function norm(s) {
     return String(s || "").toLowerCase().replace(/[^a-z]/g, "");
+}
+
+function function onlyDigits(s) {
+    return String(s || "").replace(/\D/g, "");
+}
+
+function normJid(j) {
+    return String(j || "").replace(/:\d+@/, "@");
+}
+
+/** Same human even if lid / device / pn differs */
+function samePlayer(a, b) {
+    if (!a || !b) return false;
+    if (a === b) return true;
+    if (normJid(a) === normJid(b)) return true;
+    const da = onlyDigits(a);
+    const db = onlyDigits(b);
+    if (da && db && da.length >= 10 && db.length >= 10) {
+        if (da === db || da.endsWith(db) || db.endsWith(da)) return true;
+    }
+    return false;
+}
+
+function findPlayerIndex(players, jid) {
+    for (let i = 0; i < players.length; i++) {
+        if (samePlayer(players[i], jid)) return i;
+    }
+    return -1;
 }
 
 function mention(jid) {
@@ -43,7 +73,7 @@ function scheduleTurn(sock, from, game) {
 
     game.timer = setTimeout(async function () {
         const g = getGame(from);
-        if (!g || g.id !== game.id) return;
+        if (!g || g.id !== game.id || g.status !== "playing") return;
 
         const victim = g.players[g.turn];
         g.players.splice(g.turn, 1);
@@ -52,20 +82,40 @@ function scheduleTurn(sock, from, game) {
             stopTimer(g);
             games.delete(from);
             const winner = g.players[0];
-            await sock.sendMessage(from, {
-                text: "🏆 *Word Chain Ended*\n\n" + (winner ? "Winner: " + mention(winner) : "No winner.") + "\n\n⚡ VENOM X",
-                mentions: winner ? [winner] : []
-            }).catch(function () {});
+            await sock
+                .sendMessage(from, {
+                    text:
+                        "🏆 *Word Chain Ended*\n\n" +
+                        (winner
+                            ? "Winner: " + mention(winner)
+                            : "No winner.") +
+                        "\n\n⚡ VENOM X",
+                    mentions: winner ? [winner] : []
+                })
+                .catch(function () {});
             return;
         }
 
         if (g.turn >= g.players.length) g.turn = 0;
         const next = g.players[g.turn];
 
-        await sock.sendMessage(from, {
-            text: "⏳ " + mention(victim) + " ran out of time and is *eliminated*.\n\n🔤 Your turn " + mention(next) + "\nMust start with *" + g.nextLetter.toUpperCase() + "*\nMinimum *" + g.minLen + "* letters\n⏱️ " + g.turnSeconds + "s",
-            mentions: [victim, next]
-        }).catch(function () {});
+        await sock
+            .sendMessage(from, {
+                text:
+                    "⏳ " +
+                    mention(victim) +
+                    " ran out of time and is *eliminated*.\n\n🔤 Your turn " +
+                    mention(next) +
+                    "\nMust start with *" +
+                    g.nextLetter.toUpperCase() +
+                    "*\nMinimum *" +
+                    g.minLen +
+                    "* letters\n⏱️ " +
+                    g.turnSeconds +
+                    "s",
+                mentions: [victim, next].filter(Boolean)
+            })
+            .catch(function () {});
 
         scheduleTurn(sock, from, g);
     }, seconds * 1000);
@@ -82,36 +132,63 @@ module.exports = {
         const game = getGame(from);
 
         if (sub === "join") {
-            if (!game || game.status !== "lobby") return reply("No lobby. Use:\n#wordchain start");
-            if (game.players.indexOf(sender) !== -1) return reply("You're already in.");
+            if (!game || game.status !== "lobby") {
+                return reply("No lobby. Use:\n#wordchain start");
+            }
+            if (findPlayerIndex(game.players, sender) !== -1) {
+                return reply("You're already in.");
+            }
             game.players.push(sender);
-            return reply("✅ Joined!\nPlayers: " + game.players.length + "\nHost: type *#wordchain begin*");
+            return reply(
+                "✅ Joined!\nPlayers: " +
+                    game.players.length +
+                    "\nHost: type *#wordchain begin*"
+            );
         }
 
         if (sub === "leave") {
             if (!game) return reply("No active game.");
-            const i = game.players.indexOf(sender);
+            const i = findPlayerIndex(game.players, sender);
             if (i === -1) return reply("You're not in this game.");
+
+            const wasTurn = game.status === "playing" && game.turn === i;
             game.players.splice(i, 1);
+
             if (game.players.length === 0) {
                 stopTimer(game);
                 games.delete(from);
                 return reply("Game cancelled.");
+            }
+
+            if (game.status === "playing") {
+                if (i < game.turn) game.turn -= 1;
+                if (game.turn >= game.players.length) game.turn = 0;
+                if (wasTurn) {
+                    stopTimer(game);
+                    scheduleTurn(sock, from, game);
+                }
             }
             return reply("You left the game.");
         }
 
         if (sub === "stop" || sub === "end") {
             if (!game) return reply("No active game.");
-            if (game.host !== sender) return reply("❌ Only the host can stop the game.");
+            if (!samePlayer(game.host, sender)) {
+                return reply("❌ Only the host can stop the game.");
+            }
             stopTimer(game);
             games.delete(from);
             return reply("🛑 Word Chain stopped.");
         }
 
         if (sub === "start" || sub === "create") {
-            if (game && game.status === "playing") return reply("A game is already running.");
-            const turnSeconds = Math.min(90, Math.max(25, parseInt(args[1], 10) || 40));
+            if (game && game.status === "playing") {
+                return reply("A game is already running.\n#wordchain stop");
+            }
+            const turnSeconds = Math.min(
+                90,
+                Math.max(25, parseInt(args[1], 10) || 40)
+            );
             games.set(from, {
                 id: Date.now(),
                 status: "lobby",
@@ -125,15 +202,26 @@ module.exports = {
                 turnSeconds: turnSeconds,
                 timer: null
             });
-            return reply("🎮 *Word Chain Lobby* (Hard Mode)\n\nHost joined.\nOthers: *#wordchain join*\nHost starts: *#wordchain begin*\n\n⏱️ Turn time: " + turnSeconds + "s\n🔥 Minimum 4 letters (increases later)\n\n⚡ VENOM X");
+            return reply(
+                "🎮 *Word Chain Lobby* (Hard Mode)\n\nHost joined.\nOthers: *#wordchain join*\nHost starts: *#wordchain begin*\n\n⏱️ Turn time: " +
+                    turnSeconds +
+                    "s\n🔥 Minimum 4 letters (increases later)\n\n⚡ VENOM X"
+            );
         }
 
         if (sub === "begin" || sub === "go") {
-            if (!game || game.status !== "lobby") return reply("Start a lobby first:\n#wordchain start");
-            if (game.host !== sender) return reply("❌ Only the host can begin.");
-            if (game.players.length < 2) return reply("Need at least 2 players.");
+            if (!game || game.status !== "lobby") {
+                return reply("Start a lobby first:\n#wordchain start");
+            }
+            if (!samePlayer(game.host, sender)) {
+                return reply("❌ Only the host can begin.");
+            }
+            if (game.players.length < 2) {
+                return reply("Need at least 2 players.");
+            }
 
-            const startWord = START_WORDS[Math.floor(Math.random() * START_WORDS.length)];
+            const startWord =
+                START_WORDS[Math.floor(Math.random() * START_WORDS.length)];
             game.status = "playing";
             game.used.add(norm(startWord));
             game.nextLetter = startWord.slice(-1).toLowerCase();
@@ -141,18 +229,35 @@ module.exports = {
             game.turn = 0;
             game.turnCount = 0;
 
-            const order = game.players.map(function (p, i) {
-                return (i + 1) + ". " + mention(p);
-            }).join("\n");
+            const order = game.players
+                .map(function (p, i) {
+                    return i + 1 + ". " + mention(p);
+                })
+                .join("\n");
 
             await sock.sendMessage(from, {
-                text: "🎮 *Hard Word Chain Started!*\n\nStarting word: *" + startWord + "*\nNext letter: *" + game.nextLetter.toUpperCase() + "*\n\nTurn Order:\n" + order,
+                text:
+                    "🎮 *Hard Word Chain Started!*\n\nStarting word: *" +
+                    startWord +
+                    "*\nNext letter: *" +
+                    game.nextLetter.toUpperCase() +
+                    "*\n\nTurn Order:\n" +
+                    order,
                 mentions: game.players.slice()
             });
 
             const first = game.players[0];
             await sock.sendMessage(from, {
-                text: "🔤 Your turn " + mention(first) + "\nMust start with *" + game.nextLetter.toUpperCase() + "*\nMinimum *" + game.minLen + "* letters\n⏱️ " + game.turnSeconds + "s\n\n_Type the word without prefix_",
+                text:
+                    "🔤 Your turn " +
+                    mention(first) +
+                    "\nMust start with *" +
+                    game.nextLetter.toUpperCase() +
+                    "*\nMinimum *" +
+                    game.minLen +
+                    "* letters\n⏱️ " +
+                    game.turnSeconds +
+                    "s\n\n_Type the word without prefix_",
                 mentions: [first]
             });
 
@@ -162,16 +267,40 @@ module.exports = {
 
         if (sub === "status") {
             if (!game) return reply("No active Word Chain.");
-            if (game.status === "lobby") return reply("Lobby — " + game.players.length + " players\n#wordchain begin");
+            if (game.status === "lobby") {
+                return reply(
+                    "Lobby — " +
+                        game.players.length +
+                        " players\n#wordchain begin"
+                );
+            }
             const cur = game.players[game.turn];
-            return reply("Playing\nTurn: " + mention(cur) + "\nLetter: " + game.nextLetter.toUpperCase() + "\nMin length: " + game.minLen + "\nPlayers left: " + game.players.length);
+            return reply(
+                "Playing\nTurn: " +
+                    mention(cur) +
+                    "\nLetter: " +
+                    game.nextLetter.toUpperCase() +
+                    "\nMin length: " +
+                    game.minLen +
+                    "\nPlayers left: " +
+                    game.players.length
+            );
         }
 
-        return reply("╭━━〔 🔤 HARD WORD CHAIN 〕━━⬣\n\n*#wordchain start*\n*#wordchain join*\n*#wordchain begin*\n*#wordchain stop*\n*#wordchain status*\n\nRules:\n• Minimum 4 letters (increases)\n• No repeated words\n• No very short/easy words\n• Timeout = Eliminated\n\n╰━━━━━━━━━━━━━━━━⬣");
+        return reply(
+            "╭━━〔 🔤 HARD WORD CHAIN 〕━━⬣\n\n*#wordchain start*\n*#wordchain join*\n*#wordchain begin*\n*#wordchain stop*\n*#wordchain status*\n\nRules:\n• Minimum 4 letters (increases)\n• No repeated words\n• No very short/easy words\n• Timeout = Eliminated\n\n╰━━━━━━━━━━━━━━━━⬣"
+        );
     }
 };
 
-module.exports.handleWordChainMessage = async function (sock, msg, from, sender, body, isGroup) {
+module.exports.handleWordChainMessage = async function (
+    sock,
+    msg,
+    from,
+    sender,
+    body,
+    isGroup
+) {
     if (!isGroup) return false;
     const game = getGame(from);
     if (!game || game.status !== "playing") return false;
@@ -179,29 +308,56 @@ module.exports.handleWordChainMessage = async function (sock, msg, from, sender,
     const text = String(body || "").trim();
     if (!text || text.charAt(0) === "#" || text.charAt(0) === ".") return false;
 
+    // multi-word message → ignore (not a single word play)
+    if (/\s/.test(text)) return false;
+
     const word = norm(text);
-    if (!word) return false;
+    if (!word || word.length < 2) return false;
 
     const current = game.players[game.turn];
-    if (sender !== current) return false;
+    if (!samePlayer(sender, current)) return false;
 
     if (word.charAt(0) !== game.nextLetter) {
-        await sock.sendMessage(from, { text: "❌ Must start with *" + game.nextLetter.toUpperCase() + "*", quoted: msg }).catch(function () {});
+        await sock
+            .sendMessage(from, {
+                text:
+                    "❌ Must start with *" +
+                    game.nextLetter.toUpperCase() +
+                    "*",
+                quoted: msg
+            })
+            .catch(function () {});
         return true;
     }
 
     if (word.length < game.minLen) {
-        await sock.sendMessage(from, { text: "❌ Minimum *" + game.minLen + "* letters required.", quoted: msg }).catch(function () {});
+        await sock
+            .sendMessage(from, {
+                text:
+                    "❌ Minimum *" + game.minLen + "* letters required.",
+                quoted: msg
+            })
+            .catch(function () {});
         return true;
     }
 
     if (BANNED.has(word)) {
-        await sock.sendMessage(from, { text: "❌ Too basic. Use a better word.", quoted: msg }).catch(function () {});
+        await sock
+            .sendMessage(from, {
+                text: "❌ Too basic. Use a better word.",
+                quoted: msg
+            })
+            .catch(function () {});
         return true;
     }
 
     if (game.used.has(word)) {
-        await sock.sendMessage(from, { text: "❌ Word already used.", quoted: msg }).catch(function () {});
+        await sock
+            .sendMessage(from, {
+                text: "❌ Word already used.",
+                quoted: msg
+            })
+            .catch(function () {});
         return true;
     }
 
@@ -212,15 +368,31 @@ module.exports.handleWordChainMessage = async function (sock, msg, from, sender,
 
     stopTimer(game);
 
-    await sock.sendMessage(from, { text: "✅ *" + word + "* accepted!", quoted: msg }).catch(function () {});
+    await sock
+        .sendMessage(from, {
+            text: "✅ *" + word + "* accepted!",
+            quoted: msg
+        })
+        .catch(function () {});
 
     game.turn = (game.turn + 1) % game.players.length;
     const next = game.players[game.turn];
 
-    await sock.sendMessage(from, {
-        text: "🔤 Your turn " + mention(next) + "\nMust start with *" + game.nextLetter.toUpperCase() + "*\nMinimum *" + game.minLen + "* letters\n⏱️ " + game.turnSeconds + "s",
-        mentions: [next]
-    }).catch(function () {});
+    await sock
+        .sendMessage(from, {
+            text:
+                "🔤 Your turn " +
+                mention(next) +
+                "\nMust start with *" +
+                game.nextLetter.toUpperCase() +
+                "*\nMinimum *" +
+                game.minLen +
+                "* letters\n⏱️ " +
+                game.turnSeconds +
+                "s",
+            mentions: [next]
+        })
+        .catch(function () {});
 
     scheduleTurn(sock, from, game);
     return true;

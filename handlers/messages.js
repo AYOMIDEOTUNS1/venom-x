@@ -14,20 +14,13 @@ module.exports = function (sock) {
 
     const commands = new Map();
 
-    if (!global.processedMessages) {
-        global.processedMessages = new Set();
-    }
-    if (!global.completeMessageCache) {
-        global.completeMessageCache = new Map();
-    }
+    if (!global.processedMessages) global.processedMessages = new Set();
+    if (!global.completeMessageCache) global.completeMessageCache = new Map();
 
     function loadCommands() {
         commands.clear();
         const folder = path.join(__dirname, "../commands");
-        if (!fs.existsSync(folder)) {
-            console.log("⚠️ Commands folder not found");
-            return;
-        }
+        if (!fs.existsSync(folder)) return;
 
         const files = fs.readdirSync(folder).filter(function (f) {
             return f.slice(-3) === ".js";
@@ -65,6 +58,9 @@ module.exports = function (sock) {
 
     function phoneMatch(a, b) {
         if (!a || !b) return false;
+        a = onlyDigits(a);
+        b = onlyDigits(b);
+        if (!a || !b) return false;
         if (a === b) return true;
         if (a.endsWith(b) || b.endsWith(a)) {
             return Math.min(a.length, b.length) >= 10;
@@ -85,9 +81,7 @@ module.exports = function (sock) {
             if (Array.isArray(settings.sudo)) settings.sudo.forEach(push);
         }
         if (process.env.OWNER_NUMBER) {
-            String(process.env.OWNER_NUMBER)
-                .split(/[,\s]+/)
-                .forEach(push);
+            String(process.env.OWNER_NUMBER).split(/[,\s]+/).forEach(push);
         }
         ["2349163743900", "2347077417996", "2347071970034"].forEach(push);
         return list;
@@ -103,10 +97,8 @@ module.exports = function (sock) {
         push(sender);
         const key = msg?.key || {};
         push(key.participantPn);
-        push(key.participantAlt);
         push(key.participant);
         push(key.remoteJidPn);
-        push(key.remoteJidAlt);
         push(key.remoteJid);
         return phones;
     }
@@ -165,12 +157,7 @@ module.exports = function (sock) {
             m.imageMessage?.contextInfo ||
             m.videoMessage?.contextInfo ||
             {};
-        const list = [];
-        const raw = ctx.mentionedJid || [];
-        for (let i = 0; i < raw.length; i++) {
-            if (raw[i]) list.push(raw[i]);
-        }
-        return list;
+        return ctx.mentionedJid || [];
     }
 
     function getQuotedParticipant(msg) {
@@ -191,9 +178,7 @@ module.exports = function (sock) {
     let runAntiGuards = null;
     try {
         runAntiGuards = require("../lib/antiGuard").runAntiGuards;
-    } catch (e) {
-        console.log("⚠️ antiGuard not loaded");
-    }
+    } catch (e) {}
 
     let isBanned = null;
     try {
@@ -208,9 +193,7 @@ module.exports = function (sock) {
     let afk = null;
     try {
         afk = require("../lib/afk");
-    } catch (e) {
-        console.log("⚠️ afk not loaded");
-    }
+    } catch (e) {}
 
     sock.ev.on("messages.upsert", async function (upsert) {
         try {
@@ -229,25 +212,6 @@ module.exports = function (sock) {
                     }
                 }
 
-                try {
-                    const baileys = require("@whiskeysockets/baileys");
-                    const proto = baileys.proto;
-                    if (proto && msg.key.remoteJid && msg.key.id && msg.message) {
-                        const ckey = msg.key.remoteJid + ":" + msg.key.id;
-                        const raw = Buffer.from(
-                            proto.Message.encode(
-                                proto.Message.fromObject(msg.message)
-                            ).finish()
-                        );
-                        global.completeMessageCache.set(ckey, raw);
-                        while (global.completeMessageCache.size > 1000) {
-                            const old = global.completeMessageCache.keys().next()
-                                .value;
-                            global.completeMessageCache.delete(old);
-                        }
-                    }
-                } catch (e) {}
-
                 const from = msg.key.remoteJid;
                 const isGroup = !!(from && from.endsWith("@g.us"));
                 const sender = isGroup
@@ -264,10 +228,9 @@ module.exports = function (sock) {
                 const prefix = settings.prefix || "#";
                 const body = String(getBody(msg) || "").trim();
                 const isOwner = isOwnerMsg(msg, sender, senderPn, settings);
-                const isSudo = isOwner;
-                const isPrivileged = isOwner || isSudo;
+                const isPrivileged = isOwner;
 
-                // ── AFK: activity + welcome back
+                // AFK owner-only
                 if (afk && sender && !msg.key.fromMe) {
                     try {
                         const back =
@@ -278,75 +241,49 @@ module.exports = function (sock) {
                                 from,
                                 {
                                     text:
-"╭━━〔 👋 WELCOME BACK 〕━━⬣\n" +
-"┃\n" +
-"┃ 👤 @" +
-String(sender).split("@")[0] +
-"\n" +
-"┃\n" +
-"┃ You were away for *" +
-back.offlineFor +
-"*\n" +
-(back.reason ? "┃ 📝 " + back.reason + "\n" : "") +
-"┃\n" +
-"┃ Welcome back 🔥\n" +
-"╰━━━━━━━━━━━━━━━━⬣",
+                                        "╭━━〔 👋 WELCOME BACK 〕━━⬣\n┃\n┃ 👤 @" +
+                                        String(sender).split("@")[0] +
+                                        "\n┃\n┃ Away: *" +
+                                        back.offlineFor +
+                                        "*\n┃\n┃ Welcome back 🔥\n╰━━━━━━━━━━━━━━━━⬣",
                                     mentions: [sender]
                                 },
                                 { quoted: msg }
                             );
                         }
-                    } catch (e) {
-                        console.log("afk touch:", e.message);
-                    }
+                    } catch (e) {}
                 }
 
-                // ── AFK: tag / reply notify
                 if (afk && isGroup && !msg.key.fromMe && body) {
                     try {
-                        const targets = getMentioned(msg).slice();
+                        const targets = (getMentioned(msg) || []).slice();
                         const qp = getQuotedParticipant(msg);
                         if (qp) targets.push(qp);
-
                         for (let t = 0; t < targets.length; t++) {
                             const target = targets[t];
                             if (afk.sameUser(target, sender)) continue;
                             const state = afk.getAfkState(target);
-                            if (!state) continue;
-                            if (!afk.canNotify(target)) continue;
-
+                            if (!state || !afk.canNotify(target)) continue;
                             await sock.sendMessage(
                                 from,
                                 {
                                     text:
-"╭━━〔 💤 AFK 〕━━⬣\n" +
-"┃\n" +
-"┃ @" +
-String(target).split("@")[0] +
-" is *away*\n" +
-"┃\n" +
-"┃ 📝 " +
-state.reason +
-"\n" +
-"┃ ⏱️ Offline: *" +
-state.offlineFor +
-"*\n" +
-"┃ 🔖 " +
-(state.type === "manual" ? "Manual AFK" : "Auto (20+ min quiet)") +
-"\n" +
-"┃\n" +
-"╰━━━━━━━━━━━━━━━━⬣",
+                                        "╭━━〔 💤 AFK 〕━━⬣\n┃\n┃ @" +
+                                        String(target).split("@")[0] +
+                                        " is away\n┃ ⏱️ " +
+                                        state.offlineFor +
+                                        "\n┃ 📝 " +
+                                        state.reason +
+                                        "\n╰━━━━━━━━━━━━━━━━⬣",
                                     mentions: [target]
                                 },
                                 { quoted: msg }
                             );
                         }
-                    } catch (e) {
-                        console.log("afk notify:", e.message);
-                    }
+                    } catch (e) {}
                 }
 
-                // ── ANTI GUARDS
+                // Anti
                 if (isGroup && sender && !msg.key.fromMe && runAntiGuards) {
                     try {
                         const blocked = await runAntiGuards(
@@ -356,12 +293,12 @@ state.offlineFor +
                             sender
                         );
                         if (blocked) continue;
-                    } catch (e) {
-                        console.log("antiGuard:", e.message);
-                    }
+                    } catch (e) {}
                 }
 
-                // ── WORDCHAIN (correct signature)
+                // ═══════════════════════════════════════
+                // WORDCHAIN — MUST BE HERE (no prefix)
+                // ═══════════════════════════════════════
                 if (body && !msg.key.fromMe && isGroup) {
                     try {
                         const wc = require("../commands/wordchain");
@@ -383,21 +320,15 @@ state.offlineFor +
 
                 if (!body) continue;
 
-                // private mode — only owner/sudo
-                if (isPrivateMode(settings) && !isPrivileged) {
-                    continue;
-                }
-
+                if (isPrivateMode(settings) && !isPrivileged) continue;
                 if (!body.startsWith(prefix)) continue;
 
-                // ban
                 if (isBanned) {
                     try {
                         if (
                             isBanned(sender) ||
                             isBanned(senderPn) ||
-                            isBanned(onlyDigits(sender)) ||
-                            isBanned(onlyDigits(senderPn))
+                            isBanned(onlyDigits(sender))
                         ) {
                             continue;
                         }
@@ -413,7 +344,6 @@ state.offlineFor +
                 const command = commands.get(commandName);
                 if (!command || typeof command.run !== "function") continue;
 
-                // admin-only groups
                 if (
                     isGroup &&
                     isAdminOnly &&
@@ -424,26 +354,21 @@ state.offlineFor +
                     try {
                         const meta = await sock.groupMetadata(from);
                         const participants = meta.participants || [];
-                        const digSender = onlyDigits(senderPn || sender);
                         for (let p = 0; p < participants.length; p++) {
                             const j =
-                                participants[p].id ||
-                                participants[p].jid ||
-                                "";
-                            const digJ = onlyDigits(j);
-                            const same =
-                                j === sender ||
-                                j === senderPn ||
-                                (digJ &&
-                                    digSender &&
-                                    phoneMatch(digJ, digSender));
-                            if (!same) continue;
+                                participants[p].id || participants[p].jid || "";
+                            if (
+                                !phoneMatch(j, sender) &&
+                                j !== sender &&
+                                j !== senderPn
+                            ) {
+                                continue;
+                            }
                             if (
                                 participants[p].admin === "admin" ||
                                 participants[p].admin === "superadmin"
                             ) {
                                 adminOk = true;
-                                break;
                             }
                         }
                     } catch (e) {}
@@ -478,7 +403,7 @@ state.offlineFor +
                         senderPn: senderPn,
                         isGroup: isGroup,
                         isOwner: isOwner,
-                        isSudo: isSudo,
+                        isSudo: isOwner,
                         isPrivileged: isPrivileged,
                         args: args,
                         body: body,
@@ -506,14 +431,11 @@ state.offlineFor +
                             from,
                             {
                                 text:
-                                    "╭━━〔 ❌ VENOM ERROR 〕━━⬣\n┃\n┃ Command: *" +
-                                    prefix +
-                                    commandName +
-                                    "*\n┃\n┃ " +
+                                    "╭━━〔 ❌ VENOM ERROR 〕━━⬣\n┃\n┃ " +
                                     String(
                                         (err && err.message) || err || "Error"
                                     ).slice(0, 280) +
-                                    "\n┃\n╰━━━━━━━━━━━━━━━━⬣"
+                                    "\n╰━━━━━━━━━━━━━━━━⬣"
                             },
                             { quoted: msg }
                         )

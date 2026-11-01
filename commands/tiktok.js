@@ -2,91 +2,35 @@
 
 const axios = require("axios");
 
-let runYtDlp = null;
-try {
-    runYtDlp = require("../lib/ytdlp").runYtDlp;
-} catch (e) {}
-
 function extractTikTokUrl(text) {
     text = String(text || "");
-    // full + short links
-    const patterns = [
-        /https?:\/\/(?:www\.|m\.|vm\.|vt\.)?tiktok\.com\/[^\s<>"'）】\]]+/i,
-        /https?:\/\/(?:www\.)?tiktok\.com\/@[\w.-]+\/video\/\d+/i,
-        /https?:\/\/vm\.tiktok\.com\/[\w]+\/?/i,
-        /https?:\/\/vt\.tiktok\.com\/[\w]+\/?/i
-    ];
-    for (let i = 0; i < patterns.length; i++) {
-        const m = text.match(patterns[i]);
-        if (m) return m[0].replace(/[),.;!?]+$/g, "");
-    }
-    return null;
+    const m = text.match(
+        /https?:\/\/(?:www\.|m\.|vm\.|vt\.)?tiktok\.com\/[^\s<>"']+/i
+    );
+    if (!m) return null;
+    return m[0].replace(/[),.;!?]+$/g, "");
 }
 
-function deepText(message) {
-    if (!message) return "";
-    const chunks = [];
-
-    function walk(obj, depth) {
-        if (!obj || depth > 8) return;
-        if (typeof obj === "string") {
-            chunks.push(obj);
-            return;
-        }
-        if (typeof obj !== "object") return;
-        const keys = [
-            "conversation",
-            "text",
-            "caption",
-            "selectedDisplayText",
-            "selectedButtonId",
-            "description",
-            "title",
-            "matchedText",
-            "canonicalUrl",
-            "matchedText"
-        ];
-        for (let k = 0; k < keys.length; k++) {
-            if (typeof obj[keys[k]] === "string") chunks.push(obj[keys[k]]);
-        }
-        // contextInfo.quotedMessage
-        if (obj.contextInfo && obj.contextInfo.quotedMessage) {
-            walk(obj.contextInfo.quotedMessage, depth + 1);
-        }
-        if (obj.quotedMessage) walk(obj.quotedMessage, depth + 1);
-        if (obj.message) walk(obj.message, depth + 1);
-        // common wrappers
-        const wraps = [
-            "extendedTextMessage",
-            "imageMessage",
-            "videoMessage",
-            "documentMessage",
-            "ephemeralMessage",
-            "viewOnceMessage",
-            "viewOnceMessageV2"
-        ];
-        for (let i = 0; i < wraps.length; i++) {
-            if (obj[wraps[i]]) walk(obj[wraps[i]], depth + 1);
-        }
-    }
-
-    walk(message.message || message, 0);
-    return chunks.join("\n");
-}
-
-function cleanUrl(url) {
-    url = String(url || "").trim();
+function getQuotedText(message) {
     try {
-        const u = new URL(url);
-        // keep path; drop tracking query except rare cases
-        return u.origin + u.pathname.replace(/\/$/, "") + "/";
+        const ctx =
+            message?.message?.extendedTextMessage?.contextInfo ||
+            message?.message?.imageMessage?.contextInfo ||
+            message?.message?.videoMessage?.contextInfo ||
+            {};
+        const q = ctx.quotedMessage;
+        if (!q) return "";
+        return (
+            q.conversation ||
+            q.extendedTextMessage?.text ||
+            q.imageMessage?.caption ||
+            q.videoMessage?.caption ||
+            q.externalAdReply?.sourceUrl ||
+            ""
+        );
     } catch (e) {
-        return url.split("?")[0].split("#")[0];
+        return "";
     }
-}
-
-function isTikTok(url) {
-    return /tiktok\.com/i.test(url || "");
 }
 
 function format(n) {
@@ -96,37 +40,52 @@ function format(n) {
     return String(n);
 }
 
-async function downloadBuf(url) {
-    const res = await axios.get(url, {
+async function downloadBuf(fileUrl) {
+    const res = await axios.get(fileUrl, {
         responseType: "arraybuffer",
         timeout: 120000,
         maxContentLength: 80 * 1024 * 1024,
         headers: {
             "User-Agent":
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
-            Referer: "https://www.tiktok.com/"
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            Referer: "https://www.tiktok.com/",
+            Accept: "*/*"
+        },
+        validateStatus: function (s) {
+            return s >= 200 && s < 400;
         }
     });
     const buf = Buffer.from(res.data || []);
-    if (buf.length < 1000) throw new Error("empty media");
+    if (buf.length < 2000) throw new Error("media too small");
     return buf;
 }
 
-async function fromTikwm(url) {
-    const hosts = ["https://www.tikwm.com/api/", "https://tikwm.com/api/"];
+async function tikwm(url) {
+    const endpoints = [
+        "https://www.tikwm.com/api/",
+        "https://tikwm.com/api/"
+    ];
     let last = null;
-    for (let i = 0; i < hosts.length; i++) {
+    for (let i = 0; i < endpoints.length; i++) {
         try {
-            const { data } = await axios.get(hosts[i], {
+            const { data } = await axios.get(endpoints[i], {
                 params: { url: url, hd: 1 },
-                timeout: 35000,
-                headers: { "User-Agent": "VENOM-X" }
+                timeout: 40000,
+                headers: {
+                    "User-Agent": "Mozilla/5.0",
+                    Accept: "application/json"
+                }
             });
-            const t = data && (data.data || data);
-            if (t && (t.play || t.hdplay || (t.images && t.images.length))) {
-                return t;
+            // tikwm: { code: 0, data: { play, hdplay, ... } }
+            if (data && Number(data.code) === 0 && data.data) {
+                return data.data;
             }
-            last = new Error("tikwm empty payload");
+            if (data && data.data && (data.data.play || data.data.hdplay)) {
+                return data.data;
+            }
+            last = new Error(
+                "tikwm: " + (data && data.msg ? data.msg : "bad response")
+            );
         } catch (e) {
             last = e;
         }
@@ -134,66 +93,66 @@ async function fromTikwm(url) {
     throw last || new Error("tikwm failed");
 }
 
-async function fetchTikTok(url) {
+async function dlpearl(url) {
+    const { data } = await axios.get(
+        "https://dl.kuku.lu/api/tiktok?url=" + encodeURIComponent(url),
+        {
+            timeout: 30000,
+            validateStatus: function () {
+                return true;
+            }
+        }
+    );
+    const d = data?.data || data?.result || data;
+    if (!d) throw new Error("empty");
+    const play = d.play || d.video || d.nwm || d.url;
+    if (!play && !(d.images && d.images.length)) throw new Error("no media");
+    return {
+        title: d.title || d.desc || "",
+        author: { nickname: d.author?.nickname || d.author || "Unknown" },
+        play: play,
+        hdplay: d.hdplay || play,
+        music: d.music || d.audio,
+        images: d.images || null,
+        digg_count: d.digg_count || d.likes,
+        comment_count: d.comment_count,
+        play_count: d.play_count || d.views,
+        duration: d.duration
+    };
+}
+
+async function fetchMeta(url) {
     const errors = [];
     try {
-        return await fromTikwm(url);
+        return await tikwm(url);
     } catch (e) {
-        errors.push("tikwm: " + e.message);
+        errors.push("tikwm: " + (e.message || e));
     }
-
-    // secondary simple APIs
-    const alts = [
-        "https://api.agungbot.my.id/tiktok?url=" + encodeURIComponent(url)
-    ];
-    for (let i = 0; i < alts.length; i++) {
-        try {
-            const { data } = await axios.get(alts[i], {
-                timeout: 25000,
-                validateStatus: function () {
-                    return true;
-                }
-            });
-            const t = data?.data || data?.result || data;
-            const video =
-                t?.hdplay || t?.play || t?.video || t?.url || t?.nowm;
-            if (video || (t && t.images)) {
-                return {
-                    title: t.title || t.desc || "",
-                    author: {
-                        nickname: t.author?.nickname || t.author || "Unknown"
-                    },
-                    play: video,
-                    hdplay: t.hdplay || video,
-                    music: t.music || t.audio,
-                    images: t.images || null,
-                    digg_count: t.digg_count || t.likes,
-                    comment_count: t.comment_count || t.comments,
-                    play_count: t.play_count || t.views,
-                    share_count: t.share_count,
-                    duration: t.duration
-                };
-            }
-        } catch (e) {
-            errors.push("alt: " + e.message);
-        }
+    try {
+        return await dlpearl(url);
+    } catch (e) {
+        errors.push("alt: " + (e.message || e));
     }
-
     throw new Error(errors.join(" | "));
 }
 
-function buildInfo(t) {
+function infoCap(t) {
     return (
-`╭━━〔 🎵 VENOM X TIKTOK 〕━━⬣
-┃
-┃ 👤 Author : ${t.author?.nickname || t.author || "Unknown"}
-┃ ❤️ Likes : ${format(t.digg_count)}
-┃ 💬 Comments : ${format(t.comment_count)}
-┃ 👀 Views : ${format(t.play_count)}
-┃ ⏱ Duration : ${t.duration || 0}s
-┃
-┃ 📝 ${String(t.title || t.desc || "No caption").slice(0, 180)}
-╰━━━━━━━━━━━━━━━━⬣`
+        "╭━━〔 🎵 TIKTOK 〕━━⬣\n" +
+        "┃ 👤 " +
+        (t.author?.nickname || t.author || "Unknown") +
+        "\n" +
+        "┃ ❤️ " +
+        format(t.digg_count) +
+        "  💬 " +
+        format(t.comment_count) +
+        "  👀 " +
+        format(t.play_count) +
+        "\n" +
+        "┃ 📝 " +
+        String(t.title || "").slice(0, 160) +
+        "\n" +
+        "╰━━━━━━━━━━━━━━━━⬣"
     );
 }
 
@@ -210,34 +169,19 @@ module.exports = {
         commandName,
         body
     }) {
-        // 1) args
-        let url = extractTikTokUrl((args || []).join(" "));
-
-        // 2) full command body (prefix + tt + link)
-        if (!url) url = extractTikTokUrl(body || "");
-
-        // 3) deep scan message + quoted
-        if (!url) url = extractTikTokUrl(deepText(message));
+        let url =
+            extractTikTokUrl((args || []).join(" ")) ||
+            extractTikTokUrl(body || "") ||
+            extractTikTokUrl(getQuotedText(message));
 
         if (!url) {
             return reply(
-`╭━━〔 🎵 VENOM X TIKTOK 〕━━⬣
-┃
-┃ No TikTok URL found.
-┃
-┃ Send:
-┃ #tt https://vm.tiktok.com/xxxxx
-┃ #tt https://www.tiktok.com/@user/video/123
-┃
-┃ Or *reply* to a TikTok link with #tt
-╰━━━━━━━━━━━━━━━━⬣`
+                "╭━━〔 🎵 TIKTOK 〕━━⬣\n┃\n┃ Usage:\n┃ #tt <tiktok link>\n┃ Reply to a link + #tt\n┃\n╰━━━━━━━━━━━━━━━━⬣"
             );
         }
 
-        url = cleanUrl(url);
-        if (!isTikTok(url)) {
-            return reply("❌ Invalid TikTok link.\nGot: " + url);
-        }
+        // IMPORTANT: do NOT force trailing slash / strip short-link path badly
+        url = url.trim();
 
         try {
             await sock.sendMessage(from, {
@@ -246,112 +190,55 @@ module.exports = {
         } catch (e) {}
 
         try {
-            let t = null;
-            let apiErr = null;
-            try {
-                t = await fetchTikTok(url);
-            } catch (e) {
-                apiErr = e;
-            }
-
-            if (!t && runYtDlp) {
-                try {
-                    await reply("⏳ APIs failed — yt-dlp…");
-                    const out = await runYtDlp(url);
-                    if (out && out.buffer) {
-                        await sock.sendMessage(
-                            from,
-                            {
-                                video: out.buffer,
-                                caption: "🎵 TikTok\n" + url
-                            },
-                            { quoted: message }
-                        );
-                        return;
-                    }
-                } catch (e) {
-                    apiErr = new Error(
-                        (apiErr ? apiErr.message + " | " : "") +
-                            "ytdlp: " +
-                            e.message
-                    );
-                }
-            }
-
-            if (!t) throw apiErr || new Error("All sources failed");
-
-            const info = buildInfo(t);
+            await reply("⏳ Fetching TikTok…");
+            const t = await fetchMeta(url);
+            const cap = infoCap(t);
 
             if (commandName === "ttinfo") {
-                return reply(info);
+                return reply(cap);
             }
 
             if (commandName === "ttmp3") {
                 if (!t.music) return reply("❌ No audio.");
-                await reply(info);
-                try {
-                    const abuf = await downloadBuf(t.music);
-                    await sock.sendMessage(
-                        from,
-                        { audio: abuf, mimetype: "audio/mpeg", ptt: false },
-                        { quoted: message }
-                    );
-                } catch (e) {
-                    await sock.sendMessage(
-                        from,
-                        {
-                            audio: { url: t.music },
-                            mimetype: "audio/mpeg",
-                            ptt: false
-                        },
-                        { quoted: message }
-                    );
-                }
-                return;
+                const abuf = await downloadBuf(t.music);
+                await sock.sendMessage(
+                    from,
+                    { audio: abuf, mimetype: "audio/mpeg", ptt: false },
+                    { quoted: message }
+                );
+                return reply(cap);
             }
 
-            const images = Array.isArray(t.images) ? t.images : null;
-            if (commandName === "ttphoto" || (images && images.length)) {
-                if (!images || !images.length) {
-                    return reply("❌ Not a photo slideshow.");
+            if (
+                commandName === "ttphoto" ||
+                (Array.isArray(t.images) && t.images.length)
+            ) {
+                if (!t.images || !t.images.length) {
+                    return reply("❌ Not a photo post.");
                 }
-                await reply(info);
-                for (let i = 0; i < images.length; i++) {
+                await reply(cap);
+                for (let i = 0; i < t.images.length; i++) {
                     try {
-                        const ibuf = await downloadBuf(images[i]);
+                        const ib = await downloadBuf(t.images[i]);
                         await sock.sendMessage(
                             from,
-                            { image: ibuf },
+                            { image: ib },
                             { quoted: message }
                         );
-                    } catch (e) {
-                        await sock.sendMessage(
-                            from,
-                            { image: { url: images[i] } },
-                            { quoted: message }
-                        );
-                    }
+                    } catch (e) {}
                 }
                 return;
             }
 
-            const videoUrl = t.hdplay || t.play || t.video || t.nowm;
-            if (!videoUrl) return reply("❌ No video URL.");
+            const videoUrl = t.hdplay || t.play || t.wmplay;
+            if (!videoUrl) return reply("❌ No video in API response.");
 
-            try {
-                const vbuf = await downloadBuf(videoUrl);
-                await sock.sendMessage(
-                    from,
-                    { video: vbuf, caption: info },
-                    { quoted: message }
-                );
-            } catch (e) {
-                await sock.sendMessage(
-                    from,
-                    { video: { url: videoUrl }, caption: info },
-                    { quoted: message }
-                );
-            }
+            const vbuf = await downloadBuf(videoUrl);
+            await sock.sendMessage(
+                from,
+                { video: vbuf, caption: cap },
+                { quoted: message }
+            );
 
             try {
                 await sock.sendMessage(from, {
@@ -366,13 +253,11 @@ module.exports = {
                 });
             } catch (e) {}
             return reply(
-`╭━━〔 ❌ TIKTOK 〕━━⬣
-┃
-┃ ${String(error.message || error).slice(0, 220)}
-┃
-┃ Link used:
-┃ ${url}
-╰━━━━━━━━━━━━━━━━⬣`
+                "╭━━〔 ❌ TIKTOK 〕━━⬣\n┃\n┃ " +
+                    String(error.message || error).slice(0, 240) +
+                    "\n┃\n┃ Link:\n┃ " +
+                    url +
+                    "\n╰━━━━━━━━━━━━━━━━⬣"
             );
         }
     }
