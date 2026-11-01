@@ -1,106 +1,200 @@
+"use strict";
+
+/**
+ * VENOM X - TikTok Stalk (tikwm)
+ * #ttstalk <username>
+ * #stalk <username>
+ */
+
 const axios = require("axios");
+const { getSettings } = require("../lib/settingsCache");
+
+function px() {
+    try {
+        return getSettings().prefix || "#";
+    } catch (e) {
+        return "#";
+    }
+}
 
 function cleanUser(input) {
-    let u = String(input || "").trim();
-    u = u.replace(/^@/, "");
-    u = u.replace(/https?:\/\/(www\.)?tiktok\.com\/@/i, "");
-    u = u.split(/[/?\s]/)[0];
-    return u;
+    let s = String(input || "").trim();
+    if (!s) return "";
+    // full profile url
+    const m = s.match(/tiktok\.com\/@([\w._-]+)/i);
+    if (m) return m[1];
+    s = s.replace(/^@/, "").replace(/\s+/g, "");
+    return s;
+}
+
+function format(n) {
+    n = Number(n) || 0;
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
+    return String(n);
+}
+
+async function fetchUser(uniqueId) {
+    const endpoints = [
+        "https://www.tikwm.com/api/user/info",
+        "https://tikwm.com/api/user/info"
+    ];
+    let last = null;
+
+    for (let i = 0; i < endpoints.length; i++) {
+        try {
+            const { data } = await axios.get(endpoints[i], {
+                params: { unique_id: uniqueId },
+                timeout: 30000,
+                headers: {
+                    "User-Agent": "Mozilla/5.0",
+                    Accept: "application/json"
+                }
+            });
+
+            if (data && Number(data.code) === 0 && data.data) {
+                // sometimes nested user
+                return data.data.user || data.data;
+            }
+            last = new Error((data && data.msg) || "user not found");
+        } catch (e) {
+            last = e;
+        }
+    }
+    throw last || new Error("stalk failed");
 }
 
 module.exports = {
     name: "ttstalk",
-    aliases: ["ttstalker", "tiktokstalk", "ttuser"],
+    aliases: ["stalk", "tiktokstalk", "ttuser"],
 
     run: async function ({ sock, from, args, reply, message }) {
-        const user = cleanUser(args.join(" "));
-        if (!user) {
+        const prefix = px();
+        const username = cleanUser((args || []).join(" "));
+
+        if (!username) {
             return reply(
-"╭━━〔 🎵 TT STALK 〕━━⬣\n" +
-"┃\n" +
-"┃ Usage:\n" +
-"┃ #ttstalk username\n" +
-"┃ #ttstalker @username\n" +
-"┃\n" +
-"╰━━━━━━━━━━━━━━━━⬣"
+`╭━━〔 👤 TIKTOK STALK 〕━━⬣
+
+Usage:
+${prefix}ttstalk <username>
+${prefix}stalk @charlidamelio
+${prefix}ttstalk https://www.tiktok.com/@user
+
+╰━━━━━━━━━━━━━━━━⬣`
             );
         }
 
-        await reply("🔍 Stalking TikTok: *" + user + "*");
+        try {
+            await sock.sendMessage(from, {
+                react: { text: "🔎", key: message.key }
+            });
+        } catch (e) {}
 
         try {
-            let data = null;
+            await reply("🔎 Stalking @" + username + "…");
+            const u = await fetchUser(username);
 
-            // primary
-            try {
-                const res = await axios.get(
-                    "https://www.tikwm.com/api/user/info",
-                    {
-                        params: { unique_id: user },
-                        timeout: 25000,
-                        headers: { "User-Agent": "VENOM-X" }
-                    }
-                );
-                data = res.data && (res.data.data || res.data);
-            } catch (e) {}
+            const nick = u.nickname || u.nickName || username;
+            const id = u.unique_id || u.uniqueId || username;
+            const bio = u.signature || u.bio || "—";
+            const region = u.region || "—";
+            const verified = u.verified ? "Yes" : "No";
 
-            // fallback
-            if (!data || !(data.user || data.stats || data.userInfo)) {
-                const res = await axios.get(
-                    "https://tikwm.com/api/user/info",
-                    {
-                        params: { unique_id: user },
-                        timeout: 25000,
-                        headers: { "User-Agent": "VENOM-X" }
-                    }
-                );
-                data = res.data && (res.data.data || res.data);
-            }
+            const stats = u.stats || u;
+            const followers =
+                stats.followerCount ||
+                stats.follower_count ||
+                u.follower_count ||
+                0;
+            const following =
+                stats.followingCount ||
+                stats.following_count ||
+                u.following_count ||
+                0;
+            const likes =
+                stats.heartCount ||
+                stats.heart ||
+                stats.total_favorited ||
+                u.heart_count ||
+                0;
+            const videos =
+                stats.videoCount ||
+                stats.video_count ||
+                u.video_count ||
+                0;
 
-            const u = (data && (data.user || data.userInfo || data)) || {};
-            const s = (data && (data.stats || data.statsV2 || u.stats)) || {};
-
-            const nick = u.nickname || u.nickName || u.nickname || user;
-            const id = u.uniqueId || u.unique_id || user;
-            const sig = u.signature || u.bio || u.signature || "No bio";
-            const av =
+            const avatar =
                 u.avatarLarger ||
                 u.avatarMedium ||
                 u.avatarThumb ||
                 u.avatar ||
                 null;
 
-            const followers = s.followerCount || s.followers || s.follower_count || 0;
-            const following = s.followingCount || s.following || s.following_count || 0;
-            const hearts = s.heartCount || s.heart || s.heart_count || s.total_favorited || 0;
-            const videos = s.videoCount || s.videos || s.video_count || 0;
-            const verified = u.verified ? "Yes" : "No";
+            const text =
+`╭━━〔 👤 TIKTOK STALK 〕━━⬣
+┃
+┃ 🪪 Username : @${id}
+┃ 📛 Name : ${nick}
+┃ ✅ Verified : ${verified}
+┃ 🌍 Region : ${region}
+┃
+┃ 👥 Followers : ${format(followers)}
+┃ 👤 Following : ${format(following)}
+┃ ❤️ Likes : ${format(likes)}
+┃ 🎬 Videos : ${format(videos)}
+┃
+┃ 📝 Bio
+┃ ${String(bio).slice(0, 200)}
+┃
+┃ 🔗 https://www.tiktok.com/@${id}
+┃
+╰━━━━━━━━━━━━━━━━⬣`;
 
-            const caption =
-"╭━━〔 🎵 TIKTOK STALK 〕━━⬣\n" +
-"┃ 👤 " + nick + "\n" +
-"┃ 🔗 @" + id + "\n" +
-"┃ ✅ Verified: " + verified + "\n" +
-"┃ 👥 Followers: " + followers + "\n" +
-"┃ 👤 Following: " + following + "\n" +
-"┃ ❤️ Likes: " + hearts + "\n" +
-"┃ 🎬 Videos: " + videos + "\n" +
-"┃ 📝 " + String(sig).slice(0, 120) + "\n" +
-"┃\n" +
-"┃ 🌐 https://tiktok.com/@" + id + "\n" +
-"╰━━━━━━━━━━━━━━━━⬣";
-
-            if (av) {
-                await sock.sendMessage(
-                    from,
-                    { image: { url: av }, caption: caption },
-                    { quoted: message }
-                );
-            } else {
-                await reply(caption);
+            if (avatar) {
+                try {
+                    const res = await axios.get(avatar, {
+                        responseType: "arraybuffer",
+                        timeout: 20000,
+                        headers: { "User-Agent": "Mozilla/5.0" }
+                    });
+                    const buf = Buffer.from(res.data || []);
+                    if (buf.length > 500) {
+                        await sock.sendMessage(
+                            from,
+                            { image: buf, caption: text },
+                            { quoted: message }
+                        );
+                        try {
+                            await sock.sendMessage(from, {
+                                react: { text: "✅", key: message.key }
+                            });
+                        } catch (e) {}
+                        return;
+                    }
+                } catch (e) {}
             }
+
+            await reply(text);
+            try {
+                await sock.sendMessage(from, {
+                    react: { text: "✅", key: message.key }
+                });
+            } catch (e) {}
         } catch (e) {
-            return reply("❌ TT stalk failed:\n" + e.message + "\n\nUser may be private/invalid.");
+            console.error("TTSTALK:", e.message);
+            try {
+                await sock.sendMessage(from, {
+                    react: { text: "❌", key: message.key }
+                });
+            } catch (err) {}
+            return reply(
+                "❌ Stalk failed:\n" +
+                    String(e.message || e).slice(0, 200) +
+                    "\n\nTry: " +
+                    px() +
+                    "ttstalk username"
+            );
         }
     }
 };
