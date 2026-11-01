@@ -56,8 +56,13 @@ module.exports = function (sock) {
         return String(s || "").replace(/\D/g, "");
     }
 
+    function normJid(j) {
+        return String(j || "").replace(/:\d+@/, "@");
+    }
+
     function phoneMatch(a, b) {
         if (!a || !b) return false;
+        if (normJid(a) === normJid(b)) return true;
         a = onlyDigits(a);
         b = onlyDigits(b);
         if (!a || !b) return false;
@@ -66,6 +71,12 @@ module.exports = function (sock) {
             return Math.min(a.length, b.length) >= 10;
         }
         return false;
+    }
+
+    function sameUser(a, b) {
+        if (!a || !b) return false;
+        if (a === b) return true;
+        return phoneMatch(a, b);
     }
 
     function getOwnerList(settings) {
@@ -81,7 +92,9 @@ module.exports = function (sock) {
             if (Array.isArray(settings.sudo)) settings.sudo.forEach(push);
         }
         if (process.env.OWNER_NUMBER) {
-            String(process.env.OWNER_NUMBER).split(/[,\s]+/).forEach(push);
+            String(process.env.OWNER_NUMBER)
+                .split(/[,\s]+/)
+                .forEach(push);
         }
         ["2349163743900", "2347077417996", "2347071970034"].forEach(push);
         return list;
@@ -97,8 +110,10 @@ module.exports = function (sock) {
         push(sender);
         const key = msg?.key || {};
         push(key.participantPn);
+        push(key.participantAlt);
         push(key.participant);
         push(key.remoteJidPn);
+        push(key.remoteJidAlt);
         push(key.remoteJid);
         return phones;
     }
@@ -157,7 +172,12 @@ module.exports = function (sock) {
             m.imageMessage?.contextInfo ||
             m.videoMessage?.contextInfo ||
             {};
-        return ctx.mentionedJid || [];
+        const list = [];
+        const raw = ctx.mentionedJid || [];
+        for (let i = 0; i < raw.length; i++) {
+            if (raw[i]) list.push(raw[i]);
+        }
+        return list;
     }
 
     function getQuotedParticipant(msg) {
@@ -167,7 +187,25 @@ module.exports = function (sock) {
             m.imageMessage?.contextInfo ||
             m.videoMessage?.contextInfo ||
             {};
-        return ctx.participant || null;
+        return ctx.participant || ctx.participantPn || null;
+    }
+
+    function isGroupAdmin(participants, sender, senderPn) {
+        for (let p = 0; p < participants.length; p++) {
+            const part = participants[p];
+            const j = part.id || part.jid || "";
+            const pn = part.phoneNumber || part.participantPn || "";
+            const matched =
+                sameUser(j, sender) ||
+                sameUser(j, senderPn) ||
+                sameUser(pn, sender) ||
+                sameUser(pn, senderPn);
+            if (!matched) continue;
+            if (part.admin === "admin" || part.admin === "superadmin") {
+                return true;
+            }
+        }
+        return false;
     }
 
     let recordSticker = null;
@@ -195,6 +233,23 @@ module.exports = function (sock) {
         afk = require("../lib/afk");
     } catch (e) {}
 
+    // load wordchain once; refresh on reloadCommands
+    let wordchainHandler = null;
+    function loadWordchain() {
+        try {
+            const wcPath = require.resolve("../commands/wordchain");
+            delete require.cache[wcPath];
+            const wc = require("../commands/wordchain");
+            wordchainHandler =
+                typeof wc.handleWordChainMessage === "function"
+                    ? wc.handleWordChainMessage
+                    : null;
+        } catch (e) {
+            wordchainHandler = null;
+        }
+    }
+    loadWordchain();
+
     sock.ev.on("messages.upsert", async function (upsert) {
         try {
             const messages = upsert.messages || [];
@@ -212,13 +267,36 @@ module.exports = function (sock) {
                     }
                 }
 
+                // optional protobuf cache for getcode/try
+                try {
+                    const baileys = require("@whiskeysockets/baileys");
+                    const proto = baileys.proto;
+                    if (proto && msg.message && msg.key.remoteJid && msg.key.id) {
+                        const ckey = msg.key.remoteJid + ":" + msg.key.id;
+                        const raw = Buffer.from(
+                            proto.Message.encode(
+                                proto.Message.fromObject(msg.message)
+                            ).finish()
+                        );
+                        global.completeMessageCache.set(ckey, raw);
+                        while (global.completeMessageCache.size > 1000) {
+                            const old = global.completeMessageCache
+                                .keys()
+                                .next().value;
+                            global.completeMessageCache.delete(old);
+                        }
+                    }
+                } catch (e) {}
+
                 const from = msg.key.remoteJid;
                 const isGroup = !!(from && from.endsWith("@g.us"));
                 const sender = isGroup
                     ? msg.key.participant || msg.participant || from
                     : from;
                 const senderPn =
-                    msg.key.participantPn || msg.key.remoteJidPn || sender;
+                    msg.key.participantPn ||
+                    msg.key.remoteJidPn ||
+                    sender;
 
                 try {
                     if (recordSticker) recordSticker(msg);
@@ -228,62 +306,96 @@ module.exports = function (sock) {
                 const prefix = settings.prefix || "#";
                 const body = String(getBody(msg) || "").trim();
                 const isOwner = isOwnerMsg(msg, sender, senderPn, settings);
-                const isPrivileged = isOwner;
+                const isSudo = isOwner;
+                const isPrivileged = isOwner || isSudo;
 
-                // AFK owner-only
+                // ── AFK: touch BOTH id forms (owner-only inside lib)
                 if (afk && sender && !msg.key.fromMe) {
                     try {
-                        const back =
-                            afk.touch(sender) ||
-                            (senderPn ? afk.touch(senderPn) : null);
+                        const b1 = afk.touch(sender);
+                        const b2 =
+                            senderPn && senderPn !== sender
+                                ? afk.touch(senderPn)
+                                : null;
+                        const back = b1 || b2;
                         if (back && back.wasAfk && isGroup) {
                             await sock.sendMessage(
                                 from,
                                 {
                                     text:
-                                        "╭━━〔 👋 WELCOME BACK 〕━━⬣\n┃\n┃ 👤 @" +
+                                        "╭━━〔 👋 WELCOME BACK 〕━━⬣\n" +
+                                        "┃\n" +
+                                        "┃ 👤 @" +
                                         String(sender).split("@")[0] +
-                                        "\n┃\n┃ Away: *" +
+                                        "\n" +
+                                        "┃\n" +
+                                        "┃ Away: *" +
                                         back.offlineFor +
-                                        "*\n┃\n┃ Welcome back 🔥\n╰━━━━━━━━━━━━━━━━⬣",
+                                        "*\n" +
+                                        (back.reason
+                                            ? "┃ 📝 " + back.reason + "\n"
+                                            : "") +
+                                        "┃\n" +
+                                        "┃ Welcome back 🔥\n" +
+                                        "╰━━━━━━━━━━━━━━━━⬣",
                                     mentions: [sender]
                                 },
                                 { quoted: msg }
                             );
                         }
-                    } catch (e) {}
+                    } catch (e) {
+                        console.log("afk touch:", e.message);
+                    }
                 }
 
+                // ── AFK: tag / reply (owner numbers only via lib)
                 if (afk && isGroup && !msg.key.fromMe && body) {
                     try {
                         const targets = (getMentioned(msg) || []).slice();
                         const qp = getQuotedParticipant(msg);
                         if (qp) targets.push(qp);
+
                         for (let t = 0; t < targets.length; t++) {
                             const target = targets[t];
-                            if (afk.sameUser(target, sender)) continue;
+                            if (sameUser(target, sender)) continue;
                             const state = afk.getAfkState(target);
-                            if (!state || !afk.canNotify(target)) continue;
+                            if (!state) continue;
+                            if (!afk.canNotify(target)) continue;
+
                             await sock.sendMessage(
                                 from,
                                 {
                                     text:
-                                        "╭━━〔 💤 AFK 〕━━⬣\n┃\n┃ @" +
+                                        "╭━━〔 💤 AFK 〕━━⬣\n" +
+                                        "┃\n" +
+                                        "┃ @" +
                                         String(target).split("@")[0] +
-                                        " is away\n┃ ⏱️ " +
-                                        state.offlineFor +
-                                        "\n┃ 📝 " +
+                                        " is *away*\n" +
+                                        "┃\n" +
+                                        "┃ 📝 " +
                                         state.reason +
-                                        "\n╰━━━━━━━━━━━━━━━━⬣",
+                                        "\n" +
+                                        "┃ ⏱️ Offline: *" +
+                                        state.offlineFor +
+                                        "*\n" +
+                                        "┃ 🔖 " +
+                                        (state.type === "manual"
+                                            ? "Manual AFK"
+                                            : "Auto (20+ min quiet)") +
+                                        "\n" +
+                                        "┃\n" +
+                                        "╰━━━━━━━━━━━━━━━━⬣",
                                     mentions: [target]
                                 },
                                 { quoted: msg }
                             );
                         }
-                    } catch (e) {}
+                    } catch (e) {
+                        console.log("afk notify:", e.message);
+                    }
                 }
 
-                // Anti
+                // ── ANTI GUARDS
                 if (isGroup && sender && !msg.key.fromMe && runAntiGuards) {
                     try {
                         const blocked = await runAntiGuards(
@@ -293,26 +405,23 @@ module.exports = function (sock) {
                             sender
                         );
                         if (blocked) continue;
-                    } catch (e) {}
+                    } catch (e) {
+                        console.log("antiGuard:", e.message);
+                    }
                 }
 
-                // ═══════════════════════════════════════
-                // WORDCHAIN — MUST BE HERE (no prefix)
-                // ═══════════════════════════════════════
-                if (body && !msg.key.fromMe && isGroup) {
+                // ── WORDCHAIN (no prefix, groups only)
+                if (body && !msg.key.fromMe && isGroup && wordchainHandler) {
                     try {
-                        const wc = require("../commands/wordchain");
-                        if (typeof wc.handleWordChainMessage === "function") {
-                            const handled = await wc.handleWordChainMessage(
-                                sock,
-                                msg,
-                                from,
-                                sender,
-                                body,
-                                isGroup
-                            );
-                            if (handled === true) continue;
-                        }
+                        const handled = await wordchainHandler(
+                            sock,
+                            msg,
+                            from,
+                            sender,
+                            body,
+                            isGroup
+                        );
+                        if (handled === true) continue;
                     } catch (e) {
                         console.log("wordchain:", e.message);
                     }
@@ -320,15 +429,18 @@ module.exports = function (sock) {
 
                 if (!body) continue;
 
+                // private mode → owner/sudo only for commands
                 if (isPrivateMode(settings) && !isPrivileged) continue;
                 if (!body.startsWith(prefix)) continue;
 
+                // ban
                 if (isBanned) {
                     try {
                         if (
                             isBanned(sender) ||
                             isBanned(senderPn) ||
-                            isBanned(onlyDigits(sender))
+                            isBanned(onlyDigits(sender)) ||
+                            isBanned(onlyDigits(senderPn))
                         ) {
                             continue;
                         }
@@ -344,6 +456,7 @@ module.exports = function (sock) {
                 const command = commands.get(commandName);
                 if (!command || typeof command.run !== "function") continue;
 
+                // admin-only groups
                 if (
                     isGroup &&
                     isAdminOnly &&
@@ -353,24 +466,11 @@ module.exports = function (sock) {
                     let adminOk = false;
                     try {
                         const meta = await sock.groupMetadata(from);
-                        const participants = meta.participants || [];
-                        for (let p = 0; p < participants.length; p++) {
-                            const j =
-                                participants[p].id || participants[p].jid || "";
-                            if (
-                                !phoneMatch(j, sender) &&
-                                j !== sender &&
-                                j !== senderPn
-                            ) {
-                                continue;
-                            }
-                            if (
-                                participants[p].admin === "admin" ||
-                                participants[p].admin === "superadmin"
-                            ) {
-                                adminOk = true;
-                            }
-                        }
+                        adminOk = isGroupAdmin(
+                            meta.participants || [],
+                            sender,
+                            senderPn
+                        );
                     } catch (e) {}
                     if (!adminOk) continue;
                 }
@@ -403,7 +503,7 @@ module.exports = function (sock) {
                         senderPn: senderPn,
                         isGroup: isGroup,
                         isOwner: isOwner,
-                        isSudo: isOwner,
+                        isSudo: isSudo,
                         isPrivileged: isPrivileged,
                         args: args,
                         body: body,
@@ -431,11 +531,14 @@ module.exports = function (sock) {
                             from,
                             {
                                 text:
-                                    "╭━━〔 ❌ VENOM ERROR 〕━━⬣\n┃\n┃ " +
+                                    "╭━━〔 ❌ VENOM ERROR 〕━━⬣\n┃\n┃ Command: *" +
+                                    prefix +
+                                    commandName +
+                                    "*\n┃\n┃ " +
                                     String(
                                         (err && err.message) || err || "Error"
                                     ).slice(0, 280) +
-                                    "\n╰━━━━━━━━━━━━━━━━⬣"
+                                    "\n┃\n╰━━━━━━━━━━━━━━━━⬣"
                             },
                             { quoted: msg }
                         )
@@ -447,7 +550,10 @@ module.exports = function (sock) {
         }
     });
 
-    sock.reloadCommands = loadCommands;
+    sock.reloadCommands = function () {
+        loadCommands();
+        loadWordchain();
+    };
     sock.getCommands = function () {
         return commands;
     };
