@@ -18,7 +18,7 @@ function norm(s) {
     return String(s || "").toLowerCase().replace(/[^a-z]/g, "");
 }
 
-function function onlyDigits(s) {
+function onlyDigits(s) {
     return String(s || "").replace(/\D/g, "");
 }
 
