@@ -1,7 +1,10 @@
 "use strict";
 
 /**
- * VENOM X — entry (Baileys 7 + Telegram pair + pinger + relay cache)
+ * VENOM X - entry (Baileys 7)
+ * - No QR in logs (pair from Telegram)
+ * - Persistent AUTH_DIR
+ * - Less reconnect spam when unpaired
  */
 
 require("dotenv").config();
@@ -13,81 +16,50 @@ const pino = require("pino");
 
 const PORT = process.env.PORT || 3000;
 const AUTH_DIR =
-    process.env.AUTH_DIR || path.join(__dirname, "auth_info_baileys");
-const PING_URL = process.env.PING_URL || process.env.RENDER_EXTERNAL_URL || "";
-const PING_MS = Number(process.env.PING_MS || 4 * 60 * 1000);
+    process.env.AUTH_DIR ||
+    path.join(__dirname, "auth_info_baileys");
 
 const logger = pino({ level: process.env.LOG_LEVEL || "silent" });
+
+// keep host awake
+http
+    .createServer(function (req, res) {
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        res.end("VENOM X online\n");
+    })
+    .listen(PORT, function () {
+        console.log("🌐 HTTP on port " + PORT);
+    });
 
 let sock = null;
 let baileys = null;
 let reconnectTimer = null;
-let telegramStarted = false;
+let waitLogTimer = null;
+let starting = false;
 
 function ensureDir(dir) {
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+    }
 }
 
-// keep host awake
-const server = http.createServer(function (req, res) {
-    res.writeHead(200, { "Content-Type": "text/plain" });
-    res.end("VENOM X online\n");
-});
-server.listen(PORT, function () {
-    console.log("🌐 HTTP server on port " + PORT);
-});
-
-if (PING_URL) {
-    setInterval(function () {
-        try {
-            const u = PING_URL.replace(/\/$/, "") + "/";
-            http.get(u, function (r) {
-                r.resume();
-            }).on("error", function () {});
-        } catch (e) {}
-    }, PING_MS);
-    console.log("🔁 Auto pinger every " + PING_MS + "ms");
+function hasAuthFiles() {
+    try {
+        if (!fs.existsSync(AUTH_DIR)) return false;
+        const files = fs.readdirSync(AUTH_DIR);
+        // multi-file auth: creds.json at least
+        return files.some(function (f) {
+            return f === "creds.json" || f.endsWith(".json");
+        });
+    } catch (e) {
+        return false;
+    }
 }
 
 async function loadBaileys() {
     if (baileys) return baileys;
     baileys = await import("@whiskeysockets/baileys");
     return baileys;
-}
-
-function wrapRelayCache(socket, proto) {
-    if (!global.completeMessageCache) {
-        global.completeMessageCache = new Map();
-    }
-    if (socket.__relayWrapped) return;
-    socket.__relayWrapped = true;
-
-    const orig = socket.relayMessage.bind(socket);
-    socket.relayMessage = async function (jid, message, options) {
-        options = options || {};
-        const result = await orig(jid, message, options);
-        try {
-            const messageId = options.messageId || result;
-            if (jid && messageId && typeof messageId === "string" && message) {
-                let rawBytes;
-                try {
-                    rawBytes = Buffer.from(proto.Message.encode(message).finish());
-                } catch (e) {
-                    rawBytes = Buffer.from(
-                        proto.Message.encode(
-                            proto.Message.fromObject(message)
-                        ).finish()
-                    );
-                }
-                global.completeMessageCache.set(jid + ":" + messageId, rawBytes);
-                while (global.completeMessageCache.size > 1000) {
-                    const old = global.completeMessageCache.keys().next().value;
-                    global.completeMessageCache.delete(old);
-                }
-            }
-        } catch (e) {}
-        return result;
-    };
 }
 
 function bindHandlers(socket) {
@@ -101,120 +73,163 @@ function bindHandlers(socket) {
         try {
             const h = require(optional[i]);
             if (typeof h === "function") h(socket);
-            else if (h && typeof h.bind === "function") h.bind(socket);
         } catch (e) {}
     }
 }
 
-function startTelegram(socket) {
-    if (telegramStarted) {
-        console.log("📲 Telegram already running — skip");
-        return;
-    }
-    try {
-        const tg = require("./telegram/bot");
-        if (tg && typeof tg.startTelegramBot === "function") {
-            tg.startTelegramBot(socket);
-            telegramStarted = true;
-            console.log("📲 Telegram started");
-        } else if (tg && typeof tg.start === "function") {
-            tg.start(socket);
-            telegramStarted = true;
+function scheduleReconnect(reason, delayMs) {
+    if (reconnectTimer) return;
+    const ms = delayMs || 15000;
+    console.log("🔄 Reconnect in " + Math.round(ms / 1000) + "s (" + reason + ")");
+    reconnectTimer = setTimeout(function () {
+        reconnectTimer = null;
+        startBot().catch(function (err) {
+            console.log("Reconnect failed:", err.message);
+            scheduleReconnect("error", 20000);
+        });
+    }, ms);
+}
+
+function startWaitLog() {
+    if (waitLogTimer) return;
+    // log at most once per 60s while unpaired
+    waitLogTimer = setInterval(function () {
+        if (!hasAuthFiles()) {
+            console.log("⏳ WA waiting — pair from Telegram (no session files yet)");
         }
-    } catch (e) {
-        console.log("📲 Telegram skip:", e.message);
+    }, 60000);
+}
+
+function stopWaitLog() {
+    if (waitLogTimer) {
+        clearInterval(waitLogTimer);
+        waitLogTimer = null;
     }
 }
 
 async function startBot() {
-    const B = await loadBaileys();
-    const {
-        default: makeWASocket,
-        useMultiFileAuthState,
-        DisconnectReason,
-        fetchLatestBaileysVersion,
-        proto
-    } = B;
+    if (starting) return;
+    starting = true;
 
-    ensureDir(AUTH_DIR);
-    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-
-    let version;
     try {
-        const v = await fetchLatestBaileysVersion();
-        version = v.version;
-        console.log("📲 WA Web version:", version.join("."));
-    } catch (e) {
-        console.log("📲 WA version fetch failed, using default");
-    }
+        ensureDir(AUTH_DIR);
+        const B = await loadBaileys();
+        const {
+            default: makeWASocket,
+            useMultiFileAuthState,
+            DisconnectReason,
+            fetchLatestBaileysVersion,
+            makeCacheableSignalKeyStore
+        } = B;
 
-    sock = makeWASocket({
-        auth: state,
-        logger: logger,
-        version: version,
-        printQRInTerminal: false,
-        syncFullHistory: false,
-        markOnlineOnConnect: false,
-        generateHighQualityLinkPreview: true
-    });
-
-    wrapRelayCache(sock, proto);
-    sock.ev.on("creds.update", saveCreds);
-
-    sock.ev.on("connection.update", function (update) {
-        const { connection, lastDisconnect, qr } = update || {};
-
-        if (qr) {
-            console.log("⏳ WA waiting — pair from Telegram (no QR printed)");
+        const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+        let version;
+        try {
+            const v = await fetchLatestBaileysVersion();
+            version = v.version;
+            console.log("📲 WA Web version:", version.join("."));
+        } catch (e) {
+            version = [2, 3000, 1015901307];
         }
 
-        if (connection === "open") {
-            console.log("✅ WhatsApp connected");
-            if (reconnectTimer) {
-                clearTimeout(reconnectTimer);
-                reconnectTimer = null;
+        sock = makeWASocket({
+            version: version,
+            logger: logger,
+            printQRInTerminal: false,
+            auth: {
+                creds: state.creds,
+                keys: makeCacheableSignalKeyStore(state.keys, logger)
+            },
+            browser: ["VENOM-X", "Chrome", "120.0.0"],
+            generateHighQualityLinkPreview: false,
+            syncFullHistory: false,
+            markOnlineOnConnect: false,
+            connectTimeoutMs: 60000,
+            defaultQueryTimeoutMs: 60000,
+            keepAliveIntervalMs: 25000,
+            getMessage: async function () {
+                return undefined;
             }
-        }
+        });
 
-        if (connection === "close") {
-            const statusCode =
-                lastDisconnect &&
-                lastDisconnect.error &&
-                lastDisconnect.error.output &&
-                lastDisconnect.error.output.statusCode;
+        global.sock = sock;
+        sock.ev.on("creds.update", saveCreds);
 
-            const loggedOut =
-                statusCode === DisconnectReason.loggedOut || statusCode === 401;
+        sock.ev.on("connection.update", async function (update) {
+            const { connection, lastDisconnect, qr } = update;
 
-            console.log("❌ WhatsApp closed. code:", statusCode);
+            if (qr) {
+                // pair code flow via Telegram — do not print QR
+                startWaitLog();
+            }
 
-            if (loggedOut) {
-                console.log("🚪 Logged out — re-pair from Telegram");
+            if (connection === "open") {
+                stopWaitLog();
+                console.log("✅ WhatsApp connected");
                 return;
             }
 
-            if (!reconnectTimer) {
-                const delay = statusCode === 403 ? 40000 : 5000;
-                reconnectTimer = setTimeout(function () {
-                    reconnectTimer = null;
-                    console.log("🔄 Reconnecting WhatsApp...");
-                    startBot().catch(function (err) {
-                        console.log("Reconnect failed:", err.message);
-                    });
-                }, delay);
-            }
-        }
-    });
+            if (connection === "close") {
+                const statusCode =
+                    lastDisconnect &&
+                    lastDisconnect.error &&
+                    lastDisconnect.error.output &&
+                    lastDisconnect.error.output.statusCode;
 
-    bindHandlers(sock);
-    startTelegram(sock);
-    global.sock = sock;
-    return sock;
+                const loggedOut =
+                    statusCode === DisconnectReason.loggedOut ||
+                    statusCode === 401;
+
+                console.log("❌ WhatsApp closed. code:", statusCode);
+
+                if (loggedOut) {
+                    console.log(
+                        "🚪 Logged out — delete AUTH_DIR and pair again from Telegram"
+                    );
+                    stopWaitLog();
+                    return; // do not tight-loop
+                }
+
+                // 408 / 515 / etc — backoff
+                const delay =
+                    statusCode === 408 || statusCode === 428
+                        ? 20000
+                        : statusCode === 515
+                          ? 5000
+                          : 15000;
+
+                scheduleReconnect(String(statusCode || "close"), delay);
+            }
+        });
+
+        bindHandlers(sock);
+
+        // Telegram bridge (pair codes live here)
+        try {
+            const tg = require("./telegram/bot");
+            if (tg && typeof tg.startTelegramBot === "function") {
+                tg.startTelegramBot(sock);
+                console.log("📲 Telegram bridge started");
+            } else if (tg && typeof tg.start === "function") {
+                tg.start(sock);
+                console.log("📲 Telegram bridge started");
+            }
+        } catch (e) {
+            console.log("⚠️ Telegram:", e.message);
+        }
+
+        if (!hasAuthFiles() || !(state.creds && state.creds.registered)) {
+            startWaitLog();
+            console.log("⏳ No registered session — pair from Telegram");
+        }
+    } finally {
+        starting = false;
+    }
 }
 
 startBot().catch(function (err) {
-    console.error("FATAL start error:", err);
-    process.exit(1);
+    console.error("FATAL:", err);
+    scheduleReconnect("fatal", 15000);
 });
 
 process.on("unhandledRejection", function (err) {
