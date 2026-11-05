@@ -1,17 +1,16 @@
 "use strict";
 
-const axios = require("axios");
 const {
     STARTERS,
     getUser,
     setUser,
     ensureList,
     getSpecies,
-    spriteUrl,
     makeMon,
     stars,
     dexCount
 } = require("../lib/pokemon");
+const { renderPokeCard } = require("../lib/pokeCard");
 const { getSettings } = require("../lib/settingsCache");
 
 function px() {
@@ -22,49 +21,57 @@ function px() {
     }
 }
 
-async function sendArt(sock, from, message, species, caption, shiny) {
-    const url =
-        (!shiny && species.sprite) ||
-        spriteUrl(species.id, shiny);
+async function sendCard(sock, from, message, species, mon, caption) {
     try {
-        const res = await axios.get(url, {
-            responseType: "arraybuffer",
-            timeout: 25000,
-            headers: { "User-Agent": "VENOM-X" },
-            validateStatus: function (s) {
-                return s >= 200 && s < 400;
-            }
+        const buf = await renderPokeCard({
+            name: (mon && mon.name) || species.name,
+            dex: species.id,
+            type: (mon && mon.type) || species.type,
+            rarity: (mon && mon.rarity) || species.rarity,
+            level: mon && mon.level,
+            hp: mon && mon.hp,
+            maxHp: mon && mon.maxHp,
+            shiny: mon && mon.shiny,
+            artUrl: species.sprite || undefined,
+            footer: "VENOM X · COLLECTIBLE CARD"
         });
-        const buf = Buffer.from(res.data || []);
-        if (buf.length > 800) {
-            await sock.sendMessage(
-                from,
-                { image: buf, caption: caption },
-                { quoted: message }
-            );
-            return;
-        }
+        await sock.sendMessage(
+            from,
+            { image: buf, caption: caption || "" },
+            { quoted: message }
+        );
+        return true;
     } catch (e) {
-        console.log("poke img:", e.message);
+        console.log("CARD ERR:", e.message);
+        await sock.sendMessage(
+            from,
+            {
+                text:
+                    (caption || "") +
+                    "\n\n_(card image failed: " +
+                    e.message +
+                    ")_"
+            },
+            { quoted: message }
+        );
+        return false;
     }
-    await sock.sendMessage(from, { text: caption }, { quoted: message });
 }
 
 function help(p, count) {
     return (
 `╭━━〔 ⚔️ VENOM POKÉMON 〕━━⬣
 ┃
-┃ Dex species: *${count || "1000+"}*
-┃ (full National Dex via PokeAPI)
+┃ Full dex · card art
+┃ Species: *${count || "1000+"}*
 ┃
 ┃ ${p}pokemon start
-┃ ${p}pokemon starter <bulbasaur|charmander|squirtle>
+┃ ${p}pokemon starter <name>
 ┃ ${p}team
 ┃ ${p}pokedex <name|id>
-┃ ${p}pokemon init   — refresh dex cache (owner)
+┃ ${p}pokemon init  (owner)
 ┃
-┃ Each catch later = 1 card
-┃ Max species ≈ 1025+
+┃ Cards use framed collectible layout
 ╰━━━━━━━━━━━━━━━━⬣`
     );
 }
@@ -88,46 +95,38 @@ module.exports = {
         const sub = String((args && args[0]) || "").toLowerCase();
         const rest = (args || []).slice(1).join(" ").trim();
 
-        // warm cache in background when used
         try {
             await ensureList();
         } catch (e) {
-            console.log("dex list:", e.message);
+            console.log("dex:", e.message);
         }
         const count = dexCount();
 
-        // ── INIT CACHE
         if (sub === "init" || sub === "cache") {
             if (!isOwner) return reply("Owner only.");
             try {
-                // force refresh
-                const cachePath = require("path").join(
+                const fs = require("fs");
+                const path = require("path");
+                const cachePath = path.join(
                     __dirname,
                     "..",
                     "database",
                     "poke_cache.json"
                 );
                 try {
-                    require("fs").unlinkSync(cachePath);
+                    fs.unlinkSync(cachePath);
                 } catch (e) {}
-                const { loadCache } = require("../lib/pokemon");
-                // reset memory by reloading module data
                 const list = await ensureList();
-                return reply(
-                    "✅ Dex cache built.\nSpecies indexed: *" +
-                        list.length +
-                        "*"
-                );
+                return reply("✅ Dex cache: *" + list.length + "* species");
             } catch (e) {
-                return reply("❌ Cache failed: " + e.message);
+                return reply("❌ " + e.message);
             }
         }
 
-        // ── TEAM
         if (cmd === "team" || cmd === "poketeam" || sub === "team") {
             const user = getUser(sender);
             if (!user.started || !user.team.length) {
-                return reply("No team yet.\n*" + p + "pokemon start*");
+                return reply("No team.\n*" + p + "pokemon start*");
             }
             let text = "╭━━〔 🎒 YOUR TEAM 〕━━⬣\n┃\n";
             for (let i = 0; i < user.team.length; i++) {
@@ -138,81 +137,77 @@ module.exports = {
                     ". " +
                     (m.shiny ? "✨ " : "") +
                     m.name +
-                    "  Lv." +
+                    " Lv." +
                     m.level +
-                    "  #" +
+                    " #" +
                     m.dex +
-                    "\n┃    " +
-                    (m.type || []).join("/") +
-                    " · HP " +
-                    m.hp +
-                    "/" +
-                    m.maxHp +
                     "\n";
             }
             text +=
                 "┃\n┃ Cards: *" +
                 user.team.length +
-                "* · Catches: *" +
-                (user.catches || 0) +
                 "*\n╰━━━━━━━━━━━━━━━━⬣";
-            return reply(text);
+            await reply(text);
+
+            // show lead as card
+            const lead = user.team[0];
+            try {
+                const sp = await getSpecies(lead.dex);
+                if (sp) {
+                    await sendCard(
+                        sock,
+                        from,
+                        message,
+                        sp,
+                        lead,
+                        "⭐ Team lead card"
+                    );
+                }
+            } catch (e) {}
+            return;
         }
 
-        // ── POKEDEX
         if (cmd === "pokedex" || sub === "pokedex" || sub === "dex") {
             const q =
-                cmd === "pokedex"
-                    ? (args || []).join(" ").trim()
-                    : rest || "";
-            if (!q) return reply("Usage: *" + p + "pokedex pikachu* or *" + p + "pokedex 25*");
+                cmd === "pokedex" ? (args || []).join(" ").trim() : rest;
+            if (!q) return reply("Usage: *" + p + "pokedex pikachu*");
 
             try {
-                await reply("📖 Loading dex…");
+                await reply("🃏 Rendering card…");
                 const sp = await getSpecies(q);
                 if (!sp) return reply("❌ Not found: *" + q + "*");
 
                 const caption =
-`╭━━〔 📖 POKÉDEX 〕━━⬣
-┃
-┃ #\( {sp.id} — * \){sp.name}*
-┃ Type: ${(sp.type || []).join(" / ") || "—"}
-┃ Rarity: ${stars(sp.rarity)}
-┃ Base HP: ${sp.baseHp}
-┃
-┃ Dex size: \~${count || MAX_SAFE()} species
-╰━━━━━━━━━━━━━━━━⬣`;
+                    "📖 *" +
+                    sp.name +
+                    "* #" +
+                    sp.id +
+                    "\n" +
+                    (sp.type || []).join(" / ") +
+                    " · " +
+                    stars(sp.rarity);
 
-                await sendArt(sock, from, message, sp, caption, false);
+                await sendCard(sock, from, message, sp, null, caption);
             } catch (e) {
-                return reply("❌ Dex error: " + (e.message || e));
+                return reply("❌ " + (e.message || e));
             }
             return;
         }
 
-        // ── START
         if (sub === "start") {
             const user = getUser(sender);
             if (user.started && user.team.length) {
-                return reply("Already a trainer.\n*" + p + "team*");
+                return reply("Already started.\n*" + p + "team*");
             }
             return reply(
 `╭━━〔 ⚔️ STARTER 〕━━⬣
-┃
-┃ Choose:
-┃ • bulbasaur  🌿
-┃ • charmander 🔥
-┃ • squirtle   💧
+┃ bulbasaur · charmander · squirtle
 ┃
 ┃ ${p}pokemon starter charmander
-┃
-┃ Full dex unlocked after start
-┃ (${count || "1000+"} species)
 ╰━━━━━━━━━━━━━━━━⬣`
             );
         }
 
-        // ── STARTER
         if (sub === "starter" || sub === "choose") {
             const pick = String(rest || "")
                 .toLowerCase()
@@ -222,9 +217,10 @@ module.exports = {
             }
             const user = getUser(sender);
             if (user.started && user.team.length) {
-                return reply("Starter already chosen.\n*" + p + "team*");
+                return reply("Starter already chosen.");
             }
             try {
+                await reply("🃏 Creating your starter card…");
                 const sp = await getSpecies(pick);
                 const mon = makeMon(sp, 5);
                 setUser(sender, {
@@ -233,22 +229,21 @@ module.exports = {
                     catches: 1
                 });
                 const caption =
-`╭━━〔 ✨ STARTER 〕━━⬣
-┃
-┃ You chose *\( {mon.name}* # \){mon.dex}
-┃ Type: ${(mon.type || []).join(" / ")}
-┃ Level ${mon.level} · HP ${mon.hp}
-┃${mon.shiny ? " ✨ SHINY\n┃" : ""}
-┃ ${p}team · ${p}pokedex ${mon.dex}
-╰━━━━━━━━━━━━━━━━⬣`;
-                await sendArt(sock, from, message, sp, caption, mon.shiny);
+                    "✨ Starter unlocked: *" +
+                    mon.name +
+                    "*\n" +
+                    p +
+                    "team · " +
+                    p +
+                    "pokedex " +
+                    mon.dex;
+                await sendCard(sock, from, message, sp, mon, caption);
             } catch (e) {
                 return reply("❌ " + (e.message || e));
             }
             return;
         }
 
-        // ── PROFILE
         if (!sub || sub === "help" || sub === "profile") {
             const user = getUser(sender);
             if (!user.started) return reply(help(p, count));
@@ -256,44 +251,33 @@ module.exports = {
             const lead = user.team[0];
             const caption =
 `╭━━〔 ⚔️ TRAINER 〕━━⬣
-┃
-┃ Team: *${user.team.length}* cards
+┃ Cards: *${user.team.length}*
 ┃ Catches: *${user.catches || 0}*
 ┃ Lead: *${lead ? lead.name + " Lv." + lead.level : "—"}*
-┃ Dex: *${count || "1000+"}* species
-┃
-┃ ${p}team · ${p}pokedex mewtwo
+┃ Dex: *${count || "1000+"}*
 ╰━━━━━━━━━━━━━━━━⬣`;
 
+            await reply(caption);
             if (lead) {
                 try {
                     const sp = await getSpecies(lead.dex);
-                    if (sp) {
-                        await sendArt(
-                            sock,
-                            from,
-                            message,
-                            sp,
-                            caption,
-                            lead.shiny
-                        );
-                        return;
-                    }
+                    if (sp) await sendCard(sock, from, message, sp, lead, "");
                 } catch (e) {}
             }
-            return reply(caption);
+            return;
         }
 
-        // treat random arg as dex lookup
         try {
             const sp = await getSpecies((args || []).join(" "));
             if (sp) {
-                const caption =
-`╭━━〔 📖 POKÉDEX 〕━━⬣
-┃ #\( {sp.id} — * \){sp.name}*
-┃ ${(sp.type || []).join(" / ")} · ${stars(sp.rarity)}
-╰━━━━━━━━━━━━━━━━⬣`;
-                await sendArt(sock, from, message, sp, caption, false);
+                await sendCard(
+                    sock,
+                    from,
+                    message,
+                    sp,
+                    null,
+                    "📖 " + sp.name + " #" + sp.id
+                );
                 return;
             }
         } catch (e) {}
@@ -301,7 +285,3 @@ module.exports = {
         return reply(help(p, count));
     }
 };
-
-function MAX_SAFE() {
-    return 1025;
-}
