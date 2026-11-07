@@ -1,209 +1,244 @@
 "use strict";
 
+/**
+ * VENOM X — #play / #song / #music
+ * Search YouTube → download MP3 (multi-fallback)
+ */
+
 const axios = require("axios");
 const { getSettings } = require("../lib/settingsCache");
 
-const searchCache = new Map();
-const CACHE_MS = 5 * 60 * 1000;
-const MAX_RESULTS = 8;
+let yts = null;
+try {
+    yts = require("yt-search");
+} catch (e) {}
 
 function px() {
     try {
         return getSettings().prefix || "#";
-    } catch {
+    } catch (e) {
         return "#";
     }
 }
 
-function cleanCache() {
-    const now = Date.now();
-
-    for (const [key, value] of searchCache.entries()) {
-        if (!value || now - value.at > CACHE_MS) {
-            searchCache.delete(key);
-        }
-    }
+function fmtDur(sec) {
+    sec = Math.floor(Number(sec) || 0);
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return m + ":" + String(s).padStart(2, "0");
 }
 
-function formatDuration(ms) {
-    const seconds = Math.floor((Number(ms) || 0) / 1000);
-    if (!seconds) return "Unknown";
-
-    return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-}
-
-async function searchSongs(query) {
-    const response = await axios.get(
-        "https://itunes.apple.com/search",
-        {
-            params: {
-                term: query,
-                entity: "song",
-                media: "music",
-                country: "ng",
-                limit: MAX_RESULTS
-            },
-            timeout: 20000,
-            headers: {
-                "User-Agent": "VENOM-X/1.0",
-                Accept: "application/json"
+async function searchYoutube(query) {
+    // 1) yt-search package
+    if (typeof yts === "function") {
+        try {
+            const r = await yts(query);
+            const v = (r.videos || []).filter(function (x) {
+                return x && x.videoId && (x.seconds || 0) < 900;
+            });
+            if (v.length) {
+                return v.slice(0, 6).map(function (x) {
+                    return {
+                        title: x.title,
+                        url: x.url,
+                        videoId: x.videoId,
+                        thumbnail: x.thumbnail,
+                        timestamp: x.timestamp || fmtDur(x.seconds),
+                        author: (x.author && x.author.name) || "Unknown"
+                    };
+                });
             }
+        } catch (e) {
+            console.log("yts err:", e.message);
         }
-    );
-
-    const results = response.data?.results;
-
-    if (!Array.isArray(results)) {
-        throw new Error("Apple search returned an invalid response.");
     }
 
-    return results.filter(song =>
-        song.trackName &&
-        song.artistName &&
-        song.trackViewUrl
-    );
+    // 2) public search API
+    try {
+        const { data } = await axios.get(
+            "https://api.siputzx.my.id/api/s/youtube",
+            {
+                params: { query: query },
+                timeout: 25000,
+                headers: { "User-Agent": "VENOM-X" }
+            }
+        );
+        const list = (data && data.data) || [];
+        const out = [];
+        for (let i = 0; i < list.length && out.length < 6; i++) {
+            const x = list[i];
+            if (!x || x.type && x.type !== "video") continue;
+            out.push({
+                title: x.title,
+                url: x.url || ("https://youtube.com/watch?v=" + x.videoId),
+                videoId: x.videoId,
+                thumbnail: x.thumbnail || x.image,
+                timestamp: (x.duration && x.duration.timestamp) || x.timestamp || "",
+                author: (x.author && x.author.name) || x.author || "Unknown"
+            });
+        }
+        if (out.length) return out;
+    } catch (e) {
+        console.log("siputzx search:", e.message);
+    }
+
+    throw new Error("Search failed — try another song name");
 }
 
-function formatResults(results, query, prefix) {
-    let text =
-        `╭━━〔 🎵 VENOM X MUSIC 〕━━⬣\n` +
-        `┃ 🔎 Search: ${query}\n` +
-        `┃ 🎧 Results: ${results.length}\n` +
-        `╰━━━━━━━━━━━━━━━━⬣\n\n`;
+async function downloadMp3(videoUrl) {
+    const endpoints = [
+        function () {
+            return axios.get(
+                "https://apis.davidcyriltech.my.id/download/ytmp3",
+                {
+                    params: { url: videoUrl },
+                    timeout: 60000,
+                    headers: { "User-Agent": "VENOM-X" }
+                }
+            );
+        },
+        function () {
+            return axios.get(
+                "https://apis.davidcyriltech.my.id/youtube/mp3",
+                {
+                    params: { url: videoUrl },
+                    timeout: 60000,
+                    headers: { "User-Agent": "VENOM-X" }
+                }
+            );
+        }
+    ];
 
-    results.forEach((song, index) => {
-        text +=
-            `*${index + 1}.* ${song.trackName}\n` +
-            `   🎤 ${song.artistName}\n` +
-            `   💿 ${song.collectionName || "Unknown album"}\n` +
-            `   ⏱️ ${formatDuration(song.trackTimeMillis)}\n\n`;
+    let last = null;
+    for (let i = 0; i < endpoints.length; i++) {
+        try {
+            const { data } = await endpoints[i]();
+            const r = (data && data.result) || data || {};
+            const link =
+                r.download_url ||
+                r.downloadUrl ||
+                r.url ||
+                r.audio ||
+                r.dlink ||
+                (r.result && (r.result.download_url || r.result.url));
+            if (link) {
+                return {
+                    url: link,
+                    title: r.title || "",
+                    thumb: r.thumbnail || r.thumb || ""
+                };
+            }
+            last = new Error("No download link in response");
+        } catch (e) {
+            last = e;
+        }
+    }
+    throw last || new Error("All MP3 extractors failed");
+}
+
+async function bufferFromUrl(url) {
+    const res = await axios.get(url, {
+        responseType: "arraybuffer",
+        timeout: 120000,
+        maxContentLength: 25 * 1024 * 1024,
+        headers: { "User-Agent": "VENOM-X" },
+        validateStatus: function (s) {
+            return s >= 200 && s < 400;
+        }
     });
-
-    text +=
-        `Reply using:\n` +
-        `*${prefix}play 1*\n\n` +
-        `The selected result will include its official listening link.`;
-
-    return text;
-}
-
-function formatSong(song) {
-    return (
-        `╭━━〔 🎵 VENOM X MUSIC 〕━━⬣\n` +
-        `┃ 🎶 *${song.trackName}*\n` +
-        `┃ 🎤 ${song.artistName}\n` +
-        `┃ 💿 ${song.collectionName || "Unknown album"}\n` +
-        `┃ ⏱️ ${formatDuration(song.trackTimeMillis)}\n` +
-        `╰━━━━━━━━━━━━━━━━⬣\n\n` +
-        `🔗 Listen officially:\n${song.trackViewUrl}\n\n` +
-        `⚡ VENOM X`
-    );
+    const buf = Buffer.from(res.data || []);
+    if (buf.length < 5000) throw new Error("Audio file too small / empty");
+    return buf;
 }
 
 module.exports = {
     name: "play",
-    aliases: ["song", "music", "apple"],
+    aliases: ["song", "music", "p"],
 
-    run: async function ({
-        sock,
-        from,
-        sender,
-        args,
-        message,
-        reply
-    }) {
-        cleanCache();
-
-        const prefix = px();
-        const user = sender || from;
-
-        if (!args || !args.length) {
+    run: async function ({ sock, from, args, reply, message }) {
+        const q = (args || []).join(" ").trim();
+        if (!q) {
             return reply(
 `╭━━〔 🎵 VENOM X PLAY 〕━━⬣
 
 Usage:
-${prefix}play song name
-${prefix}play song name 2
-${prefix}play 1
+${px()}play <song name>
 
-Searches songs and returns official listening links.
+Example:
+${px()}play Alone Marshmello
+${px()}play Burna Boy Last Last
 
 ╰━━━━━━━━━━━━━━━━⬣`
             );
         }
 
-        // Select a previous search result.
-        if (args.length === 1 && /^\d+$/.test(args[0])) {
-            const cached = searchCache.get(user);
-            const number = Number(args[0]);
-
-            if (!cached || !cached.results.length) {
-                return reply(
-                    `❌ No recent search.\nUse ${prefix}play <song name>.`
-                );
-            }
-
-            if (number < 1 || number > cached.results.length) {
-                return reply(
-                    `❌ Choose a number from 1 to ${cached.results.length}.`
-                );
-            }
-
-            return reply(formatSong(cached.results[number - 1]));
-        }
-
-        // Support: #play song name 2
-        let query = args.join(" ");
-        let selected = null;
-
-        const last = args[args.length - 1];
-
-        if (/^\d+$/.test(last) && args.length > 1) {
-            selected = Number(last);
-            query = args.slice(0, -1).join(" ");
-        }
-
-        if (!query.trim()) {
-            return reply("❌ Enter a song name.");
-        }
-
-        if (query.length > 150) {
-            return reply("❌ Search query is too long.");
-        }
-
-        await reply(`🔎 Searching Apple Music for *${query}*...`);
-
         try {
-            const results = await searchSongs(query);
+            await reply("🔍 Searching: *" + q + "* …");
 
-            if (!results.length) {
-                return reply("❌ No songs found. Try another search.");
-            }
+            const results = await searchYoutube(q);
+            const pick = results[0];
+            if (!pick) throw new Error("No results");
 
-            searchCache.set(user, {
-                query,
-                results,
-                at: Date.now()
-            });
+            await reply(
+                "⏬ Downloading…\n🎵 *" +
+                    pick.title +
+                    "*\n👤 " +
+                    pick.author +
+                    (pick.timestamp ? "\n⏱ " + pick.timestamp : "")
+            );
 
-            if (selected !== null) {
-                if (selected < 1 || selected > results.length) {
-                    return reply(
-                        `❌ Choose a number from 1 to ${results.length}.`
+            const dl = await downloadMp3(pick.url);
+            const audio = await bufferFromUrl(dl.url);
+
+            const caption =
+`╭━━〔 🎵 VENOM X PLAY 〕━━⬣
+┃ 🎶 ${pick.title}
+┃ 👤 ${pick.author}
+┃ ⏱ ${pick.timestamp || "—"}
+╰━━━━━━━━━━━━━━━━⬣`;
+
+            if (pick.thumbnail || dl.thumb) {
+                try {
+                    const img = await axios.get(pick.thumbnail || dl.thumb, {
+                        responseType: "arraybuffer",
+                        timeout: 15000
+                    });
+                    await sock.sendMessage(
+                        from,
+                        {
+                            image: Buffer.from(img.data),
+                            caption: caption
+                        },
+                        { quoted: message }
                     );
+                } catch (e) {
+                    await reply(caption);
                 }
-
-                return reply(formatSong(results[selected - 1]));
+            } else {
+                await reply(caption);
             }
 
-            return reply(formatResults(results, query, prefix));
-
-        } catch (error) {
-            console.error("[VENOM PLAY SEARCH]", error.message);
-
+            await sock.sendMessage(
+                from,
+                {
+                    audio: audio,
+                    mimetype: "audio/mpeg",
+                    fileName: String(pick.title).slice(0, 40) + ".mp3",
+                    ptt: false
+                },
+                { quoted: message }
+            );
+        } catch (err) {
+            console.log("PLAY ERROR:", err.message);
             return reply(
-                "❌ Music search failed.\n" +
-                String(error.message || error).slice(0, 200)
+`╭━━〔 ❌ PLAY FAILED 〕━━⬣
+
+${String(err.message || err).slice(0, 280)}
+
+Try another song name.
+If this keeps happening on Botkeep, host may be blocking music APIs (same as TikTok 403).
+
+╰━━━━━━━━━━━━━━━━⬣`
             );
         }
     }
