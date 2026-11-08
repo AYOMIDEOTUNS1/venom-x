@@ -153,7 +153,7 @@ async function bufferFromUrl(url) {
 
 module.exports = {
     name: "play",
-    aliases: ["song", "music", "p"],
+    aliases: ["song", "music"],
 
     run: async function ({ sock, from, args, reply, message }) {
         const q = (args || []).join(" ").trim();
