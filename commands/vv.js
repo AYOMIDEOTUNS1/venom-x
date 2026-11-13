@@ -1,18 +1,34 @@
+"use strict";
+
+/**
+ * VENOM X — #vv
+ * Unlock view-once media in the same chat
+ */
+
 const {
     downloadContentFromMessage,
     downloadMediaMessage
 } = require("@whiskeysockets/baileys");
 const pino = require("pino");
+const { getSettings } = require("../lib/settingsCache");
+
+function px() {
+    try {
+        return getSettings().prefix || "#";
+    } catch (e) {
+        return "#";
+    }
+}
 
 function getContextInfo(message) {
-    const m = message && message.message ? message.message : {};
+    const m = (message && message.message) || {};
     return (
-        (m.extendedTextMessage && m.extendedTextMessage.contextInfo) ||
-        (m.imageMessage && m.imageMessage.contextInfo) ||
-        (m.videoMessage && m.videoMessage.contextInfo) ||
-        (m.audioMessage && m.audioMessage.contextInfo) ||
-        (m.documentMessage && m.documentMessage.contextInfo) ||
-        (m.stickerMessage && m.stickerMessage.contextInfo) ||
+        m.extendedTextMessage?.contextInfo ||
+        m.imageMessage?.contextInfo ||
+        m.videoMessage?.contextInfo ||
+        m.audioMessage?.contextInfo ||
+        m.documentMessage?.contextInfo ||
+        m.stickerMessage?.contextInfo ||
         {}
     );
 }
@@ -23,26 +39,40 @@ function getQuotedMessage(message) {
 
 function unwrapMessage(message) {
     let current = message;
-    for (let i = 0; i < 8 && current; i++) {
-        if (current.ephemeralMessage && current.ephemeralMessage.message) {
+    for (let i = 0; i < 10 && current; i++) {
+        if (current.ephemeralMessage?.message) {
             current = current.ephemeralMessage.message;
             continue;
         }
-        if (current.viewOnceMessage && current.viewOnceMessage.message) {
+        if (current.viewOnceMessage?.message) {
             current = current.viewOnceMessage.message;
             continue;
         }
-        if (current.viewOnceMessageV2 && current.viewOnceMessageV2.message) {
+        if (current.viewOnceMessageV2?.message) {
             current = current.viewOnceMessageV2.message;
             continue;
         }
-        if (current.viewOnceMessageV2Extension && current.viewOnceMessageV2Extension.message) {
+        if (current.viewOnceMessageV2Extension?.message) {
             current = current.viewOnceMessageV2Extension.message;
+            continue;
+        }
+        if (current.documentWithCaptionMessage?.message) {
+            current = current.documentWithCaptionMessage.message;
             continue;
         }
         break;
     }
     return current || null;
+}
+
+function detectType(content) {
+    if (!content) return null;
+    if (content.imageMessage) return "image";
+    if (content.videoMessage) return "video";
+    if (content.audioMessage) return "audio";
+    if (content.stickerMessage) return "sticker";
+    if (content.documentMessage) return "document";
+    return null;
 }
 
 async function downloadMedia(mediaMessage, type, sock, message, contextInfo) {
@@ -52,10 +82,9 @@ async function downloadMedia(mediaMessage, type, sock, message, contextInfo) {
         for await (const chunk of stream) chunks.push(chunk);
         if (chunks.length) return Buffer.concat(chunks);
     } catch (e) {
-        console.log("VV stream fail:", e.message);
+        console.log("[VV] stream fail:", e.message);
     }
 
-    // fallback — helps avoid "Waiting for this message"
     try {
         const buf = await downloadMediaMessage(
             {
@@ -75,7 +104,7 @@ async function downloadMedia(mediaMessage, type, sock, message, contextInfo) {
         );
         if (buf && buf.length) return Buffer.from(buf);
     } catch (e) {
-        console.log("VV fallback fail:", e.message);
+        console.log("[VV] fallback fail:", e.message);
     }
 
     throw new Error("Could not download media (expired or already opened).");
@@ -83,7 +112,7 @@ async function downloadMedia(mediaMessage, type, sock, message, contextInfo) {
 
 module.exports = {
     name: "vv",
-    aliases: ["viewonce", "view"],
+    aliases: ["viewonce", "view", "readvo"],
 
     run: async function ({ sock, from, message, reply }) {
         try {
@@ -92,64 +121,86 @@ module.exports = {
 
             if (!quoted) {
                 return reply(
-"╭━━〔 👁️ VENOM X VIEW ONCE 〕━━⬣\n\n" +
-"Reply to a View Once message:\n#vv\n\n" +
-"╰━━━━━━━━━━━━━━━━⬣"
+`╭━━〔 👁️ VENOM X VIEW ONCE 〕━━⬣
+
+Reply to a *View Once* message:
+${px()}vv
+
+Supports: image · video · audio · sticker
+
+╰━━━━━━━━━━━━━━━━⬣`
                 );
             }
 
             const content = unwrapMessage(quoted);
-            if (!content) {
+            const type = detectType(content);
+
+            if (!type) {
                 return reply("❌ Could not read that View Once message.");
             }
 
-            if (content.imageMessage) {
-                const buffer = await downloadMedia(
-                    content.imageMessage, "image", sock, message, contextInfo
-                );
+            const mediaMessage = content[type + "Message"];
+            const buffer = await downloadMedia(
+                mediaMessage,
+                type,
+                sock,
+                message,
+                contextInfo
+            );
+
+            if (type === "image") {
                 return sock.sendMessage(
                     from,
-                    { image: buffer, caption: "👁️ View Once unlocked" },
+                    { image: buffer, caption: "👁️ View Once unlocked · VENOM X" },
                     { quoted: message }
                 );
             }
 
-            if (content.videoMessage) {
-                const buffer = await downloadMedia(
-                    content.videoMessage, "video", sock, message, contextInfo
-                );
+            if (type === "video") {
                 return sock.sendMessage(
                     from,
-                    { video: buffer, caption: "👁️ View Once unlocked" },
+                    { video: buffer, caption: "👁️ View Once unlocked · VENOM X" },
                     { quoted: message }
                 );
             }
 
-            if (content.audioMessage) {
-                const buffer = await downloadMedia(
-                    content.audioMessage, "audio", sock, message, contextInfo
-                );
+            if (type === "audio") {
                 return sock.sendMessage(
                     from,
                     {
                         audio: buffer,
-                        mimetype: content.audioMessage.mimetype || "audio/ogg; codecs=opus",
-                        ptt: !!content.audioMessage.ptt
+                        mimetype:
+                            mediaMessage.mimetype || "audio/ogg; codecs=opus",
+                        ptt: !!mediaMessage.ptt
                     },
                     { quoted: message }
                 );
             }
 
-            if (content.stickerMessage) {
-                const buffer = await downloadMedia(
-                    content.stickerMessage, "sticker", sock, message, contextInfo
+            if (type === "sticker") {
+                return sock.sendMessage(
+                    from,
+                    { sticker: buffer },
+                    { quoted: message }
                 );
-                return sock.sendMessage(from, { sticker: buffer }, { quoted: message });
+            }
+
+            if (type === "document") {
+                return sock.sendMessage(
+                    from,
+                    {
+                        document: buffer,
+                        mimetype: mediaMessage.mimetype || "application/octet-stream",
+                        fileName: mediaMessage.fileName || "venom-vv.bin",
+                        caption: "👁️ View Once document unlocked"
+                    },
+                    { quoted: message }
+                );
             }
 
             return reply("❌ Unsupported View Once type.");
         } catch (error) {
-            console.log("VV ERROR:", error.message);
+            console.log("[VV ERROR]", error.message);
             return reply("❌ Failed:\n" + error.message);
         }
     }

